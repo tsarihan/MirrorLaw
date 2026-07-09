@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "The Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation"
+authors:
+  - family-names: "Sarihan"
+    given-names: "Tom"
+    orcid: "https://orcid.org/0009-0003-8391-2303"
+    affiliation: "Harrisburg University of Science and Technology; Desnet AI LLC"
+type: article
+doi: "10.5281/zenodo.21282027"
+date-released: 2026-07-09
+license: CC-BY-4.0
+url: "https://github.com/tsarihan/MirrorLaw"
+keywords:
+  - knowledge distillation
+  - RLHF
+  - RLAIF
+  - reward model over-optimization
+  - reward hacking
+  - bias transfer
+  - imitation learning
+  - model collapse
+  - AI safety

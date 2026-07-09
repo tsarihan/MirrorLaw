@@ -1,0 +1,6 @@
+numpy>=1.24
+matplotlib>=3.7
+# real-LLM (E7) reproduction only:
+# torch>=2.1
+# transformers>=4.40
+# trl>=0.8

@@ -1,0 +1,742 @@
+\documentclass[10pt]{article} % For LaTeX2e
+\usepackage[preprint]{tmlr}
+% Submission (double-blind, anonymous). For a de-anonymized preprint (e.g. arXiv) use:
+%   \usepackage[preprint]{tmlr}
+% For the accepted camera-ready use:
+%   \usepackage[accepted]{tmlr}
+
+% Goodfellow notation disabled to avoid clashes with the macros below (\E, \R):
+% \input{math_commands.tex}
+
+\usepackage{mathptmx}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\providecommand{\doi}[1]{\href{https://doi.org/#1}{doi:#1}}
+\usepackage{url}
+
+\theoremstyle{plain}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+\newtheorem{assumption}{Assumption}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\fstar}{f^{\star}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\inner}[2]{\left\langle #1, #2 \right\rangle}
+
+\title{The Mirror Law:\\ Reference Quality and the Transfer of Systematic Bias\\ in Imitation and Distillation}
+
+% Authors are hidden automatically under the anonymous (submission) option.
+\author{\name Tom Sarihan \email tsarihan@harrisburgu.edu \\
+      \addr Harrisburg University of Science and Technology \\
+      \href{https://orcid.org/0009-0003-8391-2303}{ORCID: 0009-0003-8391-2303}}
+
+\def\month{06}
+\def\year{2026}
+\def\openreview{}
+
+\begin{document}
+\maketitle
+
+\begin{center}\small
+Preprint. DOI: \href{https://doi.org/10.5281/zenodo.21282027}{10.5281/zenodo.21282027} \quad\textbullet\quad Licensed under CC-BY-4.0
+\end{center}
+
+
+\begin{abstract}
+When a model is trained to match a reference --- a teacher network in knowledge distillation, or a reward model in RLHF --- it never observes its own error against the ground truth. It observes only its \emph{disagreement with the reference}. We make this elementary but consequential observation precise. For squared loss, the pointwise training residual decomposes exactly as the difference of two error fields, $D(x) = e_\theta(x) - \delta(x)$, where $e_\theta$ is the learner's deviation from truth and $\delta$ is the reference's. The minimizer of the observed objective over an expressive hypothesis class therefore satisfies $e_\theta = \delta$: \emph{the learner reproduces the reference's error field} (and, when under-expressive, only its representable component). Splitting $\delta$ into a systematic component (bias) and a zero-mean component (noise) yields three regimes with sharply different behavior. With a faithful reference the learner converges to truth; with a noisy reference the noise averages out and the learner still converges to truth (subject to a finite-data memorization caveat); with a \emph{biased} reference the learner clones the bias --- and, critically, the training loss falls toward zero while the true error plateaus at the bias magnitude, so the failure is undetectable from the optimization trajectory alone. We call this \emph{deceptive descent}. We give an operational calibration criterion, borrowed from measurement science, for when a reference is informative and when a learner should stop trusting it, and we show it predicts graded references and a graduation point. We connect the resulting taxonomy to knowledge distillation, learning from noisy labels, reward-model over-optimization and sycophancy, and recursive model collapse. We run a minimal, fully reproducible experiment that exhibits all three regimes, the deceptive-descent signature, and the calibration relation, and confirm the effect survives nonlinearity; a classification experiment under a spurious correlation confirms that a teacher's emergent bias transfers under distillation while symmetric label noise does not, and both a controlled proxy-reward optimization and a synthetic RLHF-style pipeline---a reward model learned from preference comparisons and optimized by PPO against a held-out gold evaluator---reproduce reward-model over-optimization, in which the measured reward inflates while true quality declines; and a recursive-distillation experiment confirms that model collapse contracts the noise component while systematic bias persists or accumulates. Finally, a real-LLM study --- DPO post-training of Qwen3.5-0.8B and 2B with both fixed-reference and cloud-judge (RLAIF) arms --- reproduces deceptive descent and the matched-error Regime-B-vs-C separation in an autoregressive model, and exhibits a predicted capacity-dependent robustness in which the larger model's pretrained prior resists a verbosity-biased judge; an author-annotated human-feedback (RLHF) arm, in which an author supplies controlled-bias preference labels, reproduces the same pattern, with the smaller model collapsing under a human length bias while the larger partially resists. We are explicit throughout about what is classical and what is new: the estimator-level facts are known; the contributions are the unifying decomposition, the regime taxonomy, the trajectory-undetectability result, the calibration criterion, the non-realizable refinement, and the cross-domain mapping. We distill the results into a \emph{Mirror Audit Protocol} for grading references, detecting deceptive descent, and deciding when to stop, graduate, or decorrelate supervision.
+\end{abstract}
+
+\section{Introduction}
+
+Imitation is the dominant way capability is now transferred between learning systems. Large language models are distilled from larger ones; policies are optimized against learned reward models; students are trained on teacher soft labels; synthetic data generated by one model trains the next. In each case a learner is optimized not against the world but against a \emph{reference} that is itself an imperfect stand-in for the world. The governing question is simple to state and easy to under-examine: \emph{when you train a model to match a reference, what do you actually get?}
+
+The starting point of this paper is an inversion that is obvious once stated and rarely made explicit. A learner trained against a reference never has access to its own error relative to the ground truth. The quantity it can compute, and the only quantity it minimizes, is its \emph{disagreement with the reference}. If the reference is wrong in some systematic way, then driving the disagreement to zero drives the learner \emph{toward} that systematic wrongness, not away from it. The reference is a mirror, and the learner converges to the mirror, blemishes included.
+
+This reframing has a clean formal core. For squared loss, write the learner's error field $e_\theta(x) = f_\theta(x) - \fstar(x)$ and the reference's error field $\delta(x) = g(x) - \fstar(x)$, where $\fstar$ is ground truth, $f_\theta$ the learner, and $g$ the reference. The pointwise training residual is then
+\begin{equation}
+D(x) \;:=\; f_\theta(x) - g(x) \;=\; e_\theta(x) - \delta(x),
+\label{eq:mirror-slogan}
+\end{equation}
+which we call the \emph{mirror law}: the observable signal is the difference of the learner's and the reference's deviations from truth. The scalar slogan $\eps_{\text{learner}} \approx \eps_{\text{learner}} - \eps_{\text{reference}}$ that motivates the title is the magnitude-level shorthand for the field identity~\eqref{eq:mirror-slogan}.
+
+What makes the law more than a tautology is that the \emph{kind} of reference imperfection matters, and the two kinds behave oppositely. Decompose the reference's error into a systematic part $b(x) = \E[\delta(x)\mid x]$ and a zero-mean part $\eta(x)$. Zero-mean error is \emph{noise}: under resampling it averages out of the optimum, and with enough data the learner recovers the truth. Systematic error is \emph{bias}: it survives any amount of averaging, and the learner inherits it exactly. This noise-versus-bias asymmetry, classical in robust statistics and in learning from noisy labels, becomes under the mirror law a statement about what a learner can and cannot inherit from a teacher.
+
+\begin{table}[h]
+\centering\small
+\caption{The three regimes and their instances across domains (\S\ref{sec:applications}).}
+\label{tab:regimes-map}
+\begin{tabular}{llll}
+\hline
+Regime & Distillation & Noisy labels & RLHF / RLAIF \\
+\hline
+A: faithful & accurate teacher & clean labels & well-specified reward \\
+B: noise & teacher sampling variance & symmetric label noise & stochastic preference noise \\
+C: bias & teacher shortcut / blind spot & systematic mislabeling & length / sycophancy reward bias \\
+\hline
+\end{tabular}
+\end{table}
+
+The practically dangerous consequence is a detection failure. In the biased regime the learner's loss \emph{against the reference} can fall all the way to the irreducible noise floor --- which may be near zero --- while its loss \emph{against the truth} plateaus at the bias magnitude. The training curve looks like a success story. We call this \emph{deceptive descent}, and we argue it is the correct abstract description of reward hacking, sycophancy transfer, and shortcut inheritance in distillation: in each, an optimization that is genuinely succeeding by its own measured objective is silently converging onto a systematic distortion. Detecting it requires information the trajectory does not contain --- ground-truth probes, or a second reference whose bias is decorrelated from the first.
+
+Finally, the law admits a quantitative notion of \emph{good enough}. A reference need not be perfect; it need only be substantially more accurate than the learner currently is. We borrow the measurement-science convention of a test accuracy ratio (a reference conventionally required to be several times more accurate than the quantity it calibrates) to give an operational criterion for when a reference is transparent, when it has been exhausted, and when a learner should graduate to a better reference or to ground truth.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\item \textbf{The mirror decomposition} (\S\ref{sec:decomp}): an exact identity expressing the observable training residual as the difference of the learner's and reference's error fields, with the corollary that an expressive learner reproduces the reference's error field.
+\item \textbf{A three-regime taxonomy} (\S\ref{sec:regimes}): faithful, noisy, and biased references, with their distinct asymptotic behavior, including the noise/bias asymmetry and the \emph{deceptive descent} of the biased regime.
+\item \textbf{A trajectory-undetectability result} (\S\ref{sec:regimes}): in the biased regime the training loss is uninformative about true error, so the failure cannot be detected from the optimization trajectory alone; detection provably requires ground-truth probes or decorrelated references.
+\item \textbf{A calibration criterion} (\S\ref{sec:calibration}): an operational condition, with a measurement-science analogy, for when a reference is informative, predicting graded references and a graduation point.
+\item \textbf{A non-realizable refinement} (\S\ref{sec:regimes}): an under-expressive learner inherits only the \emph{representable} component $\Pi_H b$ of the bias plus its own approximation error (Proposition~\ref{prop:nonrealizable}), reconciling the framework with weak-to-strong generalization and predicting the partial inheritance that finite-capacity models exhibit.
+\item \textbf{A cross-domain mapping} (\S\ref{sec:applications}): a single account of knowledge distillation, noisy-label learning, reward-model over-optimization and sycophancy, and recursive model collapse.
+\item \textbf{Reproducible experiments} (\S\ref{sec:experiments}): a regression study exhibiting all three regimes, the deceptive-descent signature, and the calibration relation; a spurious-correlation classification study showing bias transfer under distillation but not under symmetric noise; a controlled proxy-reward optimization and a synthetic RLHF-style pipeline (a reward model learned from preferences and optimized by PPO against a held-out gold evaluator) that both reproduce reward-model over-optimization; and a sensitivity analysis (App.~\ref{app:robust}) mapping the Regime-B memorization boundary. All of these synthetic experiments run on CPU in seconds to minutes. A real-LLM study (\S\ref{sec:e7}: DPO on Qwen3.5-0.8B/2B with cloud-judge RLAIF \emph{and} author-annotated human-feedback RLHF arms) reproduces the deceptive-descent and matched-error results on autoregressive models.
+\end{enumerate}
+
+We are deliberately explicit about novelty (\S\ref{sec:novelty}): the estimator-level facts in \S\ref{sec:decomp}--\S\ref{sec:regimes} are classical. The contribution is the synthesis, the taxonomy, the undetectability framing, the calibration criterion, and the unification across these machine-learning settings.
+
+\section{The Mirror Decomposition}
+\label{sec:decomp}
+
+\paragraph{Setup.} Let inputs $x$ be drawn from a distribution $P$ on $\mathcal{X}$. Let $\fstar:\mathcal{X}\to\R$ be the ground-truth target. A learner is a parametric function $f_\theta:\mathcal{X}\to\R$, and a reference (teacher) is a fixed function $g:\mathcal{X}\to\R$. We use squared loss for transparency; the qualitative conclusions extend to convex losses and, with the usual caveats, to the cross-entropy used in soft-label distillation (Appendix~\ref{app:ce}). Define the learner and reference error fields
+\[
+e_\theta(x) = f_\theta(x) - \fstar(x), \qquad \delta(x) = g(x) - \fstar(x),
+\]
+and the inner product and norm $\inner{u}{v} = \E_{x\sim P}[u(x)v(x)]$, $\norm{u}^2 = \inner{u}{u}$. The learner's \emph{true risk} and \emph{observed (training) risk} are
+\[
+R^\star(\theta) = \E\big[(f_\theta(x)-\fstar(x))^2\big] = \norm{e_\theta}^2,
+\qquad
+R_g(\theta) = \E\big[(f_\theta(x)-g(x))^2\big] = \norm{e_\theta - \delta}^2 .
+\]
+The learner minimizes $R_g$; it cannot evaluate $R^\star$, which requires access to $\fstar$.
+
+\paragraph{The identity.} Expanding the observed risk gives the central decomposition
+\begin{equation}
+R_g(\theta) \;=\; \norm{e_\theta}^2 - 2\inner{e_\theta}{\delta} + \norm{\delta}^2
+\;=\; R^\star(\theta) \;-\; 2\inner{e_\theta}{\delta} \;+\; \norm{\delta}^2 .
+\label{eq:risk-decomp}
+\end{equation}
+The observed objective is the true objective shifted by a cross term that couples the learner's error to the reference's, plus a constant. Two immediate consequences follow.
+
+\begin{assumption}[Realizability / expressiveness]
+\label{ass:realizable}
+The hypothesis class $\{f_\theta\}$ is expressive enough to represent the reference: $g$ lies in the $L^2(P)$-closure of $\{f_\theta\}$, so that $\inf_\theta R_g(\theta)=0$. Equivalently, the learner's approximation error against $g$ is negligible relative to the bias energy $\norm{b}^2$ of interest. This is the operating assumption throughout; where it fails, the conclusions hold only up to the approximation error.
+\end{assumption}
+
+\begin{proposition}[Reproduction of the reference]
+\label{prop:reproduction}
+Under Assumption~\ref{ass:realizable}, any global minimizer of $R_g$ satisfies $f_\theta = g$ in $L^2(P)$; equivalently $e_\theta = \delta$. The learner reproduces the reference's error field, not the zero field.
+\end{proposition}
+\noindent This is immediate: $R_g(\theta)\ge 0$ with equality iff $f_\theta = g$ ($P$-a.e.). The point is interpretive: convergence of training does not mean convergence to truth; it means convergence to the reference.
+
+\begin{proposition}[Gradient alignment is mediated by the reference]
+\label{prop:grad}
+The population gradient of the observed objective is
+\[
+\nabla_\theta R_g(\theta) = 2\,\E\big[(e_\theta(x)-\delta(x))\,\nabla_\theta f_\theta(x)\big]
+= \nabla_\theta R^\star(\theta) - 2\,\E\big[\delta(x)\,\nabla_\theta f_\theta(x)\big].
+\]
+The training gradient equals the true gradient only insofar as the second term vanishes, i.e.\ insofar as the reference is unbiased \emph{in the directions the learner can move}.
+\end{proposition}
+
+\noindent These statements are elementary at the estimator level: Propositions~\ref{prop:reproduction}--\ref{prop:grad} are exact identities, and the trajectory results below follow from them under stated optimization conditions. We label them as propositions for ease of reference, and treat their \emph{interpretation} --- the regime taxonomy and its consequences for distillation, RLHF, and model collapse --- as the contribution, distinguishing throughout what is classical from what is new.
+
+\paragraph{Bias/noise split.} The behavior of the second term in Proposition~\ref{prop:grad} is governed by the structure of $\delta$. Decompose
+\begin{equation}
+\delta(x) = b(x) + \eta(x), \qquad b(x) := \E[\delta(x)\mid x], \qquad \E[\eta(x)\mid x] = 0,
+\label{eq:bias-noise}
+\end{equation}
+where $b$ is the \emph{bias field} (the systematic, input-repeatable component of the reference's error) and $\eta$ is the \emph{noise field} (zero-mean given the input, e.g.\ label sampling noise, annotation variance, or stochastic teacher outputs). The probability space matters: for a \emph{deterministic} reference $g(x)$ every repeatable error is bias ($b(x)=\delta(x)$, $\eta\equiv0$), so a genuine noise component requires an explicit stochastic source --- resampled annotations, label-sampling draws, or a stochastic teacher queried afresh per presentation --- which is precisely the setting in which Regime~B's averaging applies; fixed finite-sample label noise that is \emph{not} resampled behaves, from the optimum's viewpoint, as bias. The three regimes of \S\ref{sec:regimes} are the three qualitative cases of~\eqref{eq:bias-noise}.
+
+\section{Three Regimes of Reference Quality}
+\label{sec:regimes}
+
+\subsection{Regime A: faithful reference ($b\approx 0,\ \eta\approx 0$)}
+When $\norm{\delta}$ is small, $R_g \approx R^\star$ by~\eqref{eq:risk-decomp} and $\nabla R_g \approx \nabla R^\star$ by Proposition~\ref{prop:grad}. Minimizing the observable objective minimizes the true objective; the learner converges to truth up to $O(\norm{\delta})$. This is the regime tacitly assumed whenever distillation or imitation is treated as ``learning the task.''
+
+\subsection{Regime B: noisy reference ($b\approx 0,\ \eta\neq 0$)}
+Here the reference is unbiased but stochastic. If the noise is \emph{resampled} (a fresh draw of $\eta$ per example presentation), then $\E[\nabla R_g] = \nabla R^\star$ by Proposition~\ref{prop:grad}: the stochastic training gradient is an unbiased estimator of the true gradient, and the learner still converges to $\fstar$, with $\eta$ contributing variance that slows convergence and may require regularization or averaging. The noise washes out of the optimum. Formally, the optimum minimizes $R^\star(\theta) + \norm{\eta}^2$, and since $\norm{\eta}^2$ is independent of $\theta$, the argmin is unchanged.
+
+\begin{remark}[Finite-data memorization caveat]
+The benign conclusion depends on averaging. If the noise is \emph{fixed} (one noisy label memorized per finite training point) and the learner is sufficiently overparameterized, it can interpolate the noisy labels --- the well-documented memorization-of-label-noise phenomenon --- driving $R_g\to 0$ on the training set while $R^\star$ degrades. Regime B is therefore benign \emph{in expectation under resampling and capacity control}, and degrades toward Regime-C-like behavior as data becomes scarce and capacity unbounded. We flag this as the principal assumption-sensitivity of the taxonomy, and quantify it in Appendix~\ref{app:robust} (Fig.~\ref{fig:sensitivity}): the benign regime passes into Regime-C-like memorization precisely as the sample size falls below model capacity, and weight-decay regularization mitigates it.
+\end{remark}
+
+\subsection{Regime C: biased reference ($b\neq 0$)}
+\label{sec:regimeC}
+Now the reference is systematically wrong. By Proposition~\ref{prop:reproduction}, the expressive learner converges to $e_\theta = \delta = b + \eta$. Taking expectations over the noise, the learner's asymptotic true risk is bounded below by the bias energy:
+\begin{equation}
+R^\star_\infty \;\ge\; \norm{b}^2 \;>\; 0,
+\label{eq:bias-floor}
+\end{equation}
+because the bias cannot be averaged away. Meanwhile the observed risk approaches the irreducible noise floor,
+\begin{equation}
+R_g^\infty \;\to\; \norm{\eta}^2_{\min},
+\label{eq:obs-floor}
+\end{equation}
+which can be made arbitrarily small (vanishing noise, large bias). Comparing~\eqref{eq:bias-floor} and~\eqref{eq:obs-floor} yields the central pathology.
+
+\begin{proposition}[Deceptive descent]
+\label{prop:deceptive}
+In the biased regime with small noise, assuming the optimizer converges to a global minimizer of $R_g$ (Assumption~\ref{ass:realizable}, Proposition~\ref{prop:reproduction}), the observed (training) risk $R_g(\theta_t) \to \norm{\eta}^2_{\min}\approx 0$ while the true risk $R^\star(\theta_t) \to \norm{b}^2 > 0$. The two curves diverge: the learner's measurable objective reports success while its true error converges to the reference's bias.
+\end{proposition}
+
+\begin{proposition}[Trajectory undetectability]
+\label{prop:undetect}
+Two claims, of different strength.
+\emph{(i) Static unidentifiability (elementary).} From reference observations $\{(x_i, g(x_i))\}$ alone, the bias field $b$ is not identifiable: every ground truth $\fstar = g - \delta$ with $\E[\delta\mid x]=b$ is consistent with the data, so without samples of $\fstar$ or a second, differently-biased reference, $b$ is unobservable.
+\emph{(ii) The trajectory adds nothing (the substantive claim).} The optimization trajectory $\{R_g(\theta_t)\}$ supplies no further information about $b$: it is determined by the learner's approach to $g$ and is consistent with every value of $b$. Monitoring training --- loss curves, convergence diagnostics, the rate of reward growth --- therefore cannot reveal the bias that the static data already withholds, and no amount of additional optimization against $g$ can substitute for external structure. The observation model is explicit: the claim concerns quantities computable from the learner--reference pair alone (the loss curve, the gradients of $R_g$, reference-agreement diagnostics). A probe that \emph{does} reveal $b$ --- an invariance test on a slice known a priori to be bias-free, an out-of-distribution check against trusted labels --- necessarily imports external ground-truth structure and is therefore an instance of (a) or (b) below, not a counterexample. Detecting $b$ requires breaking the symmetry: (a) samples of $\fstar$ (ground-truth probes), or (b) a second reference $g'$ whose bias $b'$ is \emph{decorrelated} from $b$ --- if $g$ and $g'$ disagree systematically at least one is biased, whereas correlated biases ($\inner{b}{b'}\approx \norm{b}\norm{b'}$) cancel in the disagreement and detection power is lost.
+\end{proposition}
+
+\noindent Proposition~\ref{prop:undetect} is the formal reason that decorrelation of supervision sources --- not mere multiplicity --- is what confers the ability to catch systematic error, and that contact with ground truth is the only fully general remedy. This specializes, to the imitation setting and with an exact identifiability statement, the broader observation that held-out validation can be structurally blind to a model's failure modes \citep{damour2020}.
+
+\begin{remark}[Finite optimization and early stopping]
+Part (ii) concerns what the trajectory reveals about the bias \emph{direction}. A natural objection is that finite optimization carries information through the \emph{rate} at which $R_g$ falls. In the realizable linear case this rate is governed by the spectrum of the input covariance (the Hessian $\tfrac{2}{N}X^\top X$), which is independent of $b$: the bias enters only the fixed point $w^\star+b$, not the convergence rate, so how fast $R_g$ decays reports the conditioning of the problem, not the bias direction. Early stopping is therefore best read not as a \emph{detector} of $b$ but as a \emph{mitigation} --- halting before the learner reaches the biased fixed point keeps it nearer its initialization, the same leash the KL penalty supplies in RLHF (\S\ref{sec:e3},\,\S\ref{sec:e5}) and that the calibration/graduation criterion (\S\ref{sec:calibration}) formalizes. Detection still requires ground-truth probes or a decorrelated reference.
+\end{remark}
+
+\begin{proposition}[Non-realizable reproduction: the learner inherits the \emph{representable} bias]
+\label{prop:nonrealizable}
+Drop realizability (Assumption~\ref{ass:realizable}). Let $H\subset L^2(P)$ be the learner's hypothesis class, taken as a closed subspace, and $\Pi_H$ the $L^2(P)$-orthogonal projection onto it. The minimizer of $R_g$ over $H$ is $f_\theta=\Pi_H g$, so the learner's error field is $e_\theta=(\Pi_H\fstar-\fstar)+\Pi_H\delta$ and, the two terms being orthogonal,
+\[
+\norm{e_\theta}^2 \;=\; \underbrace{\norm{(I-\Pi_H)\fstar}^2}_{\text{approximation error (own)}} \;+\; \underbrace{\norm{\Pi_H\delta}^2}_{\text{projected reference error}}.
+\]
+The learner inherits only the representable component $\Pi_H b$ of the reference's bias; as $H\uparrow L^2(P)$, $\Pi_H b\to b$ and the approximation term vanishes, recovering Proposition~\ref{prop:reproduction}.
+\end{proposition}
+
+\noindent \emph{Two qualifications.} For a closed subspace $H$ (linear or kernel learners, as in Fig.~\ref{fig:nonrealizable}) the split is exact by orthogonality; for a nonlinear class $\Pi_H$ is the best-approximation operator and it holds approximately, as with Proposition~\ref{prop:reproduction}. And for a stochastic reference the claim is conditional on a draw of $\delta$: under resampled zero-mean noise the projected noise $\Pi_H\eta$ averages out in expectation, leaving the projected bias $\Pi_H b$. The proposition refines the dominant practical case --- a small student distilled from a larger teacher it cannot represent. Three consequences. \emph{(i) Partial inheritance:} only the representable part of $b$ transfers; a smaller class inherits less bias but pays more approximation error, a genuine trade-off, confirmed across $12$ seeds (Fig.~\ref{fig:nonrealizable}: $\norm{\Pi_H b}^2$ rises from $0.08$ to $\norm{b}^2$ as capacity grows while the approximation floor falls to $0$). This projection account recovers, as one term of the mirror identity, the distillation bias--variance trade-off \citep{menon2021} and the fidelity gap by which students fail to fully match teachers \citep{stanton2021} --- we unify these, not rediscover them. \emph{(ii) Reconciliation with weak-to-strong generalization} \citep{burns2023}: when a \emph{strong} student supervised by a \emph{weak} teacher exceeds it, the student \emph{can} represent the teacher's error, so projection alone would predict full cloning; the escape is the complementary optimization-side mechanism of the remark above --- a pretrained prior and early stopping keep the student short of the global $R_g$-minimizer $g$. Capacity (this proposition) and optimization (the remark) are the two routes by which inheritance becomes partial. The framework thus takes a \emph{falsifiable} position in the weak-to-strong debate: a strong student driven to the global $R_g$-minimizer (no early stopping, no KL leash) should fully clone the representable weak-teacher bias, while an early-stopped one escapes it --- the $0.8\mathrm{B}\!\to\!2\mathrm{B}$ capacity arm of a real run is the direct test. \emph{(iii) Prediction for real models:} a finite-capacity, finite-step learner --- including the policy in a real RLHF/RLAIF run --- inherits a representable, regularization-attenuated fraction of the bias, so observed \emph{under-cloning} is what the theory predicts, not evidence against it.
+
+\begin{table}[h]
+\centering\small
+\caption{Capacity direction and the prediction it tests (teacher $=$ reference, student $=$ learner/policy). Same-size is the realizable baseline; the cross-size arms separate the capacity route (Proposition~\ref{prop:nonrealizable}) from the optimization route (early-stopping remark).}
+\label{tab:capacity}
+\begin{tabular}{lll}
+\hline
+Direction & Theoretical role & Prediction \\
+\hline
+same size & realizable cloning (Prop.~\ref{prop:reproduction}) & full transfer of representable bias under sufficient optimization \\
+large $\to$ small & compression / non-realizable (Prop.~\ref{prop:nonrealizable}) & partial inheritance --- only $\Pi_H b$ transfers \\
+small $\to$ large & weak-to-strong test & bias transfers unless prior / KL / early stopping blocks global minimization \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.52\linewidth]{fig14_nonrealizable.pdf}
+\caption{\textbf{Non-realizable inheritance is partial (E1, $12$ seeds).} A rank-$k$ learner distilled from a biased reference it cannot fully represent: true error (blue) splits exactly into its own approximation error $\norm{(I-\Pi_H)\fstar}^2$ (orange, falling) and the \emph{projected} reference bias $\norm{\Pi_H b}^2$ (red, rising to $\norm{b}^2$). Only the representable component of the bias is inherited; full capacity recovers Proposition~\ref{prop:reproduction}.}
+\label{fig:nonrealizable}
+\end{figure}
+
+\section{The Calibration Criterion}
+\label{sec:calibration}
+
+A reference need not be faithful to be useful; it must only be substantially better than the learner currently is. The cross term in~\eqref{eq:risk-decomp} shows that training against $g$ reduces the learner's true error so long as moving $f_\theta$ toward $g$ moves it toward $\fstar$ --- roughly, while the learner is farther from truth than the reference is:
+\begin{equation}
+\norm{e_\theta} \;\gtrsim\; \norm{\delta}.
+\label{eq:useful}
+\end{equation}
+Once $\norm{e_\theta}\lesssim\norm{\delta}$, the residual $D = e_\theta - \delta$ is dominated by the reference's own error, and continued optimization tracks $\delta$ rather than reduces $e_\theta$: the learner begins to inherit the reference's blemishes instead of correcting its own.
+
+\paragraph{A transparency heuristic.} Measurement science codifies the analogous requirement as a \emph{test accuracy ratio}: a calibration reference is conventionally required to be several times (classically four times) more accurate than the quantity being measured, so that the reference's own error is negligible in the result. The learning analogue is an order-of-magnitude heuristic
+\begin{equation}
+\norm{\delta} \;\lesssim\; \tfrac{1}{4}\,\norm{e_\theta},
+\label{eq:tar}
+\end{equation}
+under which the reference is approximately transparent and~\eqref{eq:risk-decomp} reduces to near-faithful behavior over the relevant range. Two consequences follow, both matching practice.
+
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\item \textbf{Graded references work.} A reference that is itself imperfect ($\norm{\delta}>0$) can still substantially improve a much worse learner, as long as~\eqref{eq:tar} holds. A partially trained teacher can teach a weaker student; a reference need not be flawless to be valuable.
+\item \textbf{Graduation.} As the learner improves and $\norm{e_\theta}\to\norm{\delta}$, condition~\eqref{eq:useful} fails: the reference is exhausted, and the signal-to-bias ratio degrades. Further progress requires a more accurate reference or direct ground-truth contact. The learner should \emph{switch mirrors}.
+\end{enumerate}
+
+We present~\eqref{eq:useful}--\eqref{eq:tar} as an order-of-magnitude operational heuristic, not a theorem: the constant in~\eqref{eq:tar} is a convention inherited from metrology, its precise value is task-dependent, and we use it only to indicate the regime in which a reference is approximately transparent --- not as a calibrated threshold.
+
+\paragraph{What the threshold buys (run).} The constant is a convention, but its effect is quantitative and we can show exactly what it purchases (E1 condition (D)). In the realizable linear case a learner trained to match a reference whose systematic error has magnitude $\norm{\delta}=r\,\norm{e_\theta^0}$ clones that error, so its residual true error settles at a \emph{floor}
+\[
+\norm{e_\theta}^2 / \norm{e_\theta^0}^2 \;\longrightarrow\; r^2,
+\]
+The asymptotic learner is $\fstar+b$, so the residual error field is $e_\theta=b$ with norm $r\norm{e_\theta^0}$ and true risk $r^2\norm{e_\theta^0}^2$: the floor is a \emph{fractional} contamination, expressed in units of the learner's initial squared error, not an absolute error. This is verified across $12$ seeds (Fig.~\ref{fig:calibration}; trained learners track $r^2$ to within finite-step under-cloning). The $4\!:\!1$ ratio $r=\tfrac14$ is then exactly the choice that holds the inherited contamination to $r^2=\tfrac{1}{16}\approx6\%$ of the learner's original error --- the metrology convention for a ``negligible'' reference contribution --- while $r=1$ is break-even (distillation neither helps nor hurts) and $r>1$ makes it actively harmful. Nothing privileges $\tfrac14$ beyond the contamination level it fixes: a stricter application would pick $\tfrac{1}{10}$ ($1\%$), a looser one $\tfrac12$ ($25\%$). The qualitative graduation behaviour is identical across the conventional $2\!:\!1$ to $10\!:\!1$ range --- only the fixed contamination level shifts --- so the criterion is robust to the precise constant. Crucially the observable residual $R_g\to0$ for \emph{every} $r$ (held at $\sim\!10^{-5}$ throughout the sweep), so $r$ --- and hence whether the reference has graduated --- cannot be read from training and must be established by grading the reference against in-domain ground truth: the same requirement that bounds the ensembling floor (\S\ref{sec:experiments}) and that Proposition~\ref{prop:undetect} makes unavoidable.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.52\linewidth]{fig13_calibration.pdf}
+\caption{\textbf{The graduation threshold is a contamination convention (E1).} A learner distilled from a reference with systematic-error ratio $r=\norm{\delta}/\norm{e_\theta^0}$ inherits residual true error, \emph{normalized by} $\norm{e_\theta^0}^2$, $\to r^2$ --- the fractional contamination (cloned-bias floor; $12$ seeds, $95\%$ CIs within markers). The $4\!:\!1$ test-accuracy ratio $r=\tfrac14$ fixes the contamination at $\tfrac{1}{16}\approx6\%$; $r=1$ is break-even and $r>1$ (shaded) makes distillation harmful. The observable residual $R_g\to0$ for all $r$, so $r$ must be established by ground-truth grading, not read from training.}
+\label{fig:calibration}
+\end{figure}
+
+\section{Applications}
+\label{sec:applications}
+
+The taxonomy provides a single vocabulary for a range of otherwise separately discussed phenomena.
+
+\paragraph{Knowledge distillation.} A student trained on a teacher's soft labels \citep{hinton2015} minimizes disagreement with the teacher. By Proposition~\ref{prop:reproduction} it inherits the teacher's systematic errors --- miscalibration, specific class confusions, shortcut reliance. Distillation transfers ``dark knowledge'' and dark bias alike. The mirror law predicts that distillation quality is upper-bounded by teacher quality on any axis where the teacher's error is systematic, and that student validation against the teacher (rather than against held-out ground truth) is precisely the metric that cannot reveal the inherited bias (Proposition~\ref{prop:undetect}).
+
+\paragraph{Learning from noisy labels.} The noise/bias split~\eqref{eq:bias-noise} is exactly the distinction between symmetric/unbiased label noise (Regime B, survivable under averaging) and systematic mislabeling --- annotator bias, dataset artifacts, spurious correlations (Regime C, inherited). This recovers and reframes a known empirical contrast: models are remarkably robust to symmetric noise yet reliably learn systematic dataset biases.
+
+\paragraph{Reward-model over-optimization and sycophancy.} In RLHF a policy is optimized against a learned reward model that serves as the reference. Documented systematic reward-model biases --- preferences for length, for confident tone, for agreement with the user --- are bias fields $b$. Optimizing the policy drives measured reward up ($R_g$ down) while true quality stalls or degrades ($R^\star$ at $\norm{b}^2$): reward hacking \citep{skalse2022,amodei2016,gao2023} and sycophancy transfer \citep{perez2022,sharma2023} are instances of deceptive descent (Proposition~\ref{prop:deceptive}; demonstrated in a controlled setting in \S\ref{sec:e3} and in a synthetic RLHF-style pipeline in \S\ref{sec:e5}). The mirror law identifies the remedy structurally: ground-truth evaluation and decorrelated reward signals (Proposition~\ref{prop:undetect}), not more optimization against the same reference.
+
+\paragraph{Beyond squared loss: cross-entropy, DPO, and logit matching.} The squared-loss identity is the cleanest carrier of the argument, but the mechanism is loss-agnostic at the gradient level. For softmax cross-entropy --- the loss of practical distillation and RLHF --- the gradient with respect to the logits is $p_\theta - q = (p_\theta - p^\star) - (q - p^\star) = e_\theta - \delta$, the mirror identity in probability space (Appendix~\ref{app:ce}). The taxonomy, deceptive descent, and trajectory-undetectability (Proposition~\ref{prop:undetect}) transfer verbatim, because the objective still observes only $p_\theta - q$; the single caveat is that the asymptotic plateau $R^\star_\infty=\norm{b}^2$ becomes \emph{approximate}, modulated by the softmax Fisher metric $\mathrm{diag}(p)-pp^\top$ rather than exact. The same reading covers direct preference optimization (DPO). Here the bias source is the preference \emph{oracle} --- not $\pi_\mathrm{ref}$, which is the KL leash of the early-stopping remark --- and the implicit reward $\beta\log(\pi_\theta/\pi_\mathrm{ref})$ inherits whatever systematic preference the comparison data encodes. PPO-RLHF is a \emph{double mirror} (oracle $\to$ reward model $\to$ policy), DPO a \emph{single mirror} (oracle $\to$ policy directly); the optimizer routes the same bias differently but escapes none of it --- direct alignment algorithms exhibit analogous preference-signal over-optimization as the effective KL constraint is relaxed \citep{rafailov2024daa}, indicating the systematic error lives in the preference signal, not the algorithm. Soft-label (logit) distillation completes the family: temperature rescales but does not remove the bias term.
+
+\begin{proposition}[Preference learning is a mirror]
+\label{prop:preference}
+Let true quality be $\fstar$ and suppose a reference annotator (human or model) ranks responses by a biased score $s=\fstar+b$, generating Bradley--Terry comparisons
+\[
+P(y_i\succ y_j)=\sigma\!\big(s(y_i)-s(y_j)\big)=\sigma\!\big((\fstar(y_i)-\fstar(y_j))+(b(y_i)-b(y_j))\big).
+\]
+A reward model $R_\phi$ fit to these comparisons by the Bradley--Terry maximum-likelihood objective is identifiable only up to an additive constant and, in the realizable, consistent limit, recovers $R_\phi=\fstar+b+c$. Consequently a policy optimized against $R_\phi$ (PPO) or against the same comparisons directly (DPO, whose implicit reward is $\beta\log(\pi_\theta/\pi_\mathrm{ref})$) ascends $\fstar+b$ and inherits the annotator's bias field $b$ exactly as Regime~C predicts, with the KL/early-stopping leash bounding the displacement toward the $b$-contaminated optimum.
+\end{proposition}
+\begin{proof}[Proof sketch]
+The Bradley--Terry log-likelihood depends on $R_\phi$ only through pairwise differences $R_\phi(y_i)-R_\phi(y_j)$, so $R_\phi$ is identifiable up to an additive constant; its population maximizer matches the difference structure of the data-generating score $s=\fstar+b$, giving $R_\phi=\fstar+b+c$. Ascending $R_\phi$ (or, for DPO, the implicit reward whose induced preferences equal the data's) therefore ascends $\fstar+b$.
+\end{proof}
+
+\noindent The reward model is thus the mirror of the annotator --- it clones $b$ --- and the policy is the mirror of the reward model. The preference setting is therefore not an \emph{analogy} to the squared-loss law but an \emph{instance} of it, with the annotator bias $b$ in the role of the reference error $\delta$ and Bradley--Terry identifiability supplying exactly the additive constant the decomposition already tolerates. In practice the reward model is itself a finite-capacity learner, so by Proposition~\ref{prop:nonrealizable} it recovers only the representable component $\Pi_H b$ of the annotator bias; expressive reward models may thus partially escape bias directions they cannot represent --- the preference-learning counterpart of partial inheritance.
+
+\paragraph{Recursive distillation and model collapse.} Training each model generation on the previous generation's outputs composes error fields: $\delta_{n+1}$ accumulates $\delta_n$ plus any new bias. The mirror law makes a specific, checkable prediction here that refines the qualitative picture of collapse: the decomposition~\eqref{eq:bias-noise} should \emph{separate} across generations --- the noise component contracts (as variance is lost to finite-sample resampling) while the systematic component is \emph{retained} (a single biased source) or \emph{accumulates} (a per-generation artifact), so the error becomes bias-dominated rather than merely lower-variance. This is sharper than ``recursive training degrades the model'': it predicts \emph{which} part of the error survives. Self-distillation's gains, by contrast, live in the regime where the ``teacher'' is the same model's lower-variance ensemble: noise reduction without added bias.
+
+\paragraph{E6: testing the collapse decomposition (run).}
+\label{sec:e6}
+We simulate recursive generation with the canonical model-collapse recursion \citep{shumailov2024} --- each generation estimates a distribution's mean and variance from a finite sample of the previous generation and passes them on --- with the mirror law's bias term layered on top. Tracking the two components of~\eqref{eq:bias-noise} across generations (averaged over many chains): with a single biased source, the noise standard deviation contracts from $1.00$ to $0.21$ over $20$ generations (a ${\sim}4.7\times$ reduction toward zero) while the systematic bias persists, ending near its initial magnitude rather than contracting; with a small per-generation artifact, the bias instead accumulates roughly linearly (from $0$ to $0.89$, tracking the linear reference $k\delta$) while the noise contracts identically. In both cases the error budget shifts from noise-dominated to bias-dominated, exactly as the decomposition predicts (Fig.~\ref{fig:collapse}). Collapse is thus, in the mirror-law reading, the loss of the \emph{averageable} component; whatever is systematic in the generator is what remains.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{fig10_collapse.pdf}
+\caption{\textbf{E6: model collapse decomposed.} Recursive generation (canonical mean/variance recursion, averaged over chains) tracked through the bias/noise decomposition~\eqref{eq:bias-noise}. \emph{(a)} A single biased source: the noise std (blue) contracts ${\sim}4.7\times$ toward zero while the systematic bias (red) is retained. \emph{(b)} A per-generation artifact: the bias accumulates roughly linearly (tracking $k\delta$, dotted) while the noise contracts identically. In both panels the surviving error is almost entirely systematic --- collapse removes the averageable component, not the bias.}
+\label{fig:collapse}
+\end{figure}
+
+\section{Experimental Design}
+\label{sec:experiments}
+
+We report a suite of experiments of increasing realism, all released as runnable code. \textbf{E1} is fully specified and reproducible on CPU in minutes --- the minimal demonstration that the three regimes and the deceptive-descent signature appear as predicted, surviving nonlinearity. \textbf{E2} confirms the biased regime on a controlled classification task with a planted spurious correlation. \textbf{E3} demonstrates the reward-model case in a controlled proxy-reward setting and \textbf{E5} (\S\ref{sec:e5}) in a synthetic RLHF-style pipeline. \textbf{E4} (Appendix~\ref{app:robust}) maps the Regime-B boundary, and \textbf{E6} (\S\ref{sec:e6}) tests the recursive-distillation prediction; sensitivity analyses for the main effects appear in Appendix~\ref{app:robust}.
+
+\subsection{E1: minimal regression demonstration}
+\paragraph{Data.} Inputs $x\sim\mathcal{N}(0,I_d)$, $d=10$. Ground truth $\fstar$ is a fixed two-layer MLP (width 64, $\tanh$, random frozen weights), or any fixed nonlinear target. The reference is
+\[
+g(x) = \fstar(x) + b(x) + \eta, \qquad b(x) = c\cdot\sigma(w^\top x),\quad \eta\sim\mathcal{N}(0,\sigma_\eta^2),
+\]
+where $b$ is a smooth systematic offset active in part of input space (a ``blind spot'') with magnitude controlled by $c$, and $\eta$ is resampled per presentation. The learner $f_\theta$ is an MLP of the same family trained by MSE to $g$.
+
+\paragraph{Conditions.}
+(A) $c=0,\ \sigma_\eta=0$;\quad
+(B) $c=0,\ \sigma_\eta$ large;\quad
+(C) $c$ large, $\sigma_\eta=0$;\quad
+plus (D) a sweep over $\norm{b}$ and over the ratio $\norm{\delta}/\norm{e_\theta^{\text{init}}}$.
+
+\paragraph{Metrics.} Track over training both $R_g$ (MSE to the reference, computable by the learner) and $R^\star$ (MSE to ground truth, held out, computable only by us). Report convergence curves and asymptotes.
+
+\paragraph{Results.} The pre-registered predictions hold quantitatively (Fig.~\ref{fig:regimes}; $d=20$, $N=4000$, full-batch GD, seeded).
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+\item \textbf{A (faithful):} $R_g$ and $R^\star$ both reach numerical zero.
+\item \textbf{B (noisy, $\sigma^2{=}1$):} $R_g$ floors at the noise variance, $R_g^\infty = 1.0008$, while $R^\star_\infty = 7.2\times10^{-3}$: the noise washes out of the optimum as predicted.
+\item \textbf{C (biased, $\norm{b}^2{=}1$):} \emph{deceptive descent} --- $R_g^\infty = 0$ (numerical) while $R^\star_\infty = 1.0003 \approx \norm{b}^2$. The two curves diverge (Proposition~\ref{prop:deceptive}); this is the central result (Fig.~\ref{fig:regimes}C).
+\item \textbf{D (calibration):} sweeping $\norm{b}^2\in[0.06,4.0]$, the learner's asymptotic true risk tracks the bias energy with a through-origin slope of $0.985$ (theory: $1.0$); see Fig.~\ref{fig:cal}a, confirming $R^\star_\infty=\norm{b}^2$.
+\end{itemize}
+
+\paragraph{Detection sub-experiment (run).} With two references carrying \emph{independent} bias directions, both in Regime C, each learner's loss against its own reference reaches $\approx 0$, yet the root-mean-square disagreement between the two references is large ($1.38\pm0.16$ over twelve seeds, matching the $\sqrt{2}\approx1.41$ expected for independent unit-norm biases). Agreement-with-the-reference is uninformative about the bias; cross-reference disagreement exposes it --- an empirical instance of Proposition~\ref{prop:undetect}.
+
+\paragraph{MLP confirmation (run).} Repeating Regime C with a hand-coded two-layer $\tanh$ network ($d{=}10$, width $64$, $N{=}2000$, momentum GD) and a localized systematic bias of energy $\norm{b}^2 = 0.614$ yields final $R_g = 1.5\times10^{-3}$ and final $R^\star = 0.616 \approx \norm{b}^2$ (Fig.~\ref{fig:cal}b). The deceptive-descent divergence survives nonlinearity, and the plateau lands within $0.3\%$ of the predicted bias energy.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{fig1_regimes.pdf}
+\caption{\textbf{E1, linear model: the three regimes.} True risk $R^\star$ (vs.\ ground truth, solid) and observed risk $R_g$ (vs.\ the reference, dashed) over full-batch gradient descent. \emph{A:} a faithful reference drives both to zero. \emph{B:} a noisy reference ($\sigma^2=1$) floors the observed risk at the noise variance, yet the true risk still collapses ($R^\star_\infty\approx 7\times10^{-3}$) --- the noise washes out. \emph{C:} a biased reference produces \emph{deceptive descent} exactly as predicted by Proposition~\ref{prop:deceptive}: the observed risk falls to numerical zero while the true risk plateaus at the bias energy ($R^\star_\infty = 1.0003 \approx \norm{b}^2 = 1$). The optimization succeeds by its own measure while converging onto systematic error.}
+\label{fig:regimes}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{fig2_calibration_mlp.pdf}
+\caption{\textbf{E1, calibration and nonlinear confirmation.} \emph{(a)} Sweeping the reference's bias energy, the learner's asymptotic true risk $R^\star_\infty$ tracks $\norm{b}^2$ along the identity line (measured through-origin slope $0.985$), confirming that the learner inherits exactly the bias and nothing of the (absent) noise. \emph{(b)} The same Regime-C divergence with a two-layer $\tanh$ network: $R_g$ (dashed) falls to $\approx 10^{-3}$ while $R^\star$ (solid) plateaus at $0.616$, within $0.3\%$ of the bias energy $\norm{b}^2 = 0.614$ (dotted). Deceptive descent is not an artifact of linearity.}
+\label{fig:cal}
+\end{figure}
+
+\subsection{E2: classification under a spurious correlation (run)}
+\label{sec:e2}
+We instantiate the biased regime in classification with a controlled spurious-correlation task. Inputs carry a \emph{core} feature (class-conditional, Bayes accuracy $\approx 0.88$) and a \emph{spurious} feature --- a clean, high-margin shortcut that encodes a variable $s$ equal to the label $y$ with probability $\rho$. A teacher (low capacity, early-stopped) is trained on a strongly correlated set ($\rho=0.97$) and acquires an \emph{emergent} systematic bias: over-reliance on the shortcut. Three students are then trained on a \emph{separate, weakly correlated pool} ($\rho=0.65$, whose true labels would teach the robust core feature), differing only in label source: (i) distilled from the teacher's soft labels, (ii) trained on clean labels, (iii) trained on labels with $20\%$ symmetric (unbiased) noise. All are evaluated out-of-distribution ($\rho=0.5$, spurious feature uninformative), overall and on the minority group ($s\neq y$) where the bias bites; a core-only oracle reaches $0.84$ OOD and a spurious-only oracle $0.51$ (chance), bracketing the robust and shortcut strategies. This is a controlled, planted instance of the documented transfer of teacher bias to low-frequency subgroups under distillation \citep{lukasik2022}, here with the mirror law's concealment-by-agreement reading.
+
+\paragraph{Results (Fig.~\ref{fig:spurious}).} The teacher is biased (OOD $0.63$; OOD-minority $0.25$, \emph{below} chance --- it actively mispredicts the minority group via the shortcut). The \textbf{distilled student clones it} (OOD $0.63$, OOD-minority $0.25$, agreement with the teacher $99.5\%$): the bias transfers faithfully (Regime C). The \textbf{clean-label student is robust} (OOD $0.82$, OOD-minority $0.73$, near the core oracle), and \emph{disagrees} with the teacher ($72\%$ agreement) precisely where the teacher errs. The \textbf{symmetric-noise student survives} (OOD $0.78$, OOD-minority $0.70$): unbiased noise costs a little variance but does not transfer (Regime B). The concealment is the practically important part: judged only by agreement with the teacher, distillation looks like a near-perfect success ($99.5\%$), yet OOD ground truth reveals an inherited bias that this in-distribution agreement cannot see (Proposition~\ref{prop:undetect}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.96\linewidth]{fig3_spurious.pdf}
+\caption{\textbf{E2: bias transfer under distillation, not under symmetric noise.} A teacher trained on a strongly spurious set over-relies on the shortcut (OOD-minority accuracy below chance). Students trained on a separate weakly correlated pool: the \emph{distilled} student inherits the teacher's bias (OOD/minority accuracy collapses, $99.5\%$ agreement with the teacher), while the \emph{clean-label} and \emph{symmetric-noise} students recover the robust feature. In-distribution accuracy (light bars) understates the gap that out-of-distribution accuracy (dark bars) and minority-group accuracy (red bars) expose.}
+\label{fig:spurious}
+\end{figure}
+
+\subsection{E3: controlled proxy-reward optimization (run)}
+\label{sec:e3}
+We instantiate the biased regime in a controlled, idealized model of reinforcement-learning-from-human-feedback (RLHF) over-optimization, where a policy is optimized against a hand-specified \emph{proxy} reward that stands in for true quality. Following the synthetic gold-versus-proxy design of \citet{gao2023}, we let the proxy carry a systematic bias, $r(z) = q^\star(z) + \lambda\,(z\cdot u)$, where $q^\star$ is the true (gold) quality, peaked at a legitimate response, and $u$ is a nuisance direction (a measurable attribute such as length) that the proxy over-rewards. A Gaussian policy $\pi_\theta=\mathcal{N}(\mu,\sigma^2 I)$ is optimized against $r$ by gradient ascent with a KL penalty $\beta\,\mathrm{KL}(\pi_\theta\,\|\,\pi_\mathrm{ref})$ to a reference $\pi_\mathrm{ref}=\mathcal{N}(0,\sigma^2 I)$; the proxy is differentiable, so the policy mean is optimized directly ($d=8$, $\lambda=1.2$, $\sigma=1$, $\beta=0.01$). This idealized design isolates the over-optimization geometry with no learned reward model and no preference data; \S\ref{sec:e5} reproduces the same effect in a synthetic RLHF-style pipeline.
+
+\paragraph{Results (Fig.~\ref{fig:hacking}).} Optimizing the biased proxy is \emph{deceptive descent in reward space}: the measured proxy reward climbs monotonically (from $0$ to $+1.22$), while the held-out true quality first rises, peaks at $+0.205$ after $13$ steps (KL $0.21$), and then \emph{declines} to $-0.206$ as the policy exploits the nuisance direction --- a net loss of $0.41$ in true quality relative to the peak, incurred entirely while the optimizer's own objective reports steady improvement. Plotted against the KL budget from the reference, proxy reward rises monotonically while true quality traces the inverted-U of reward-model over-optimization \citep{gao2023}. By Proposition~\ref{prop:undetect} the decline is invisible to the optimizer, which sees only the proxy; the remedy is the regime's remedy --- gold (ground-truth) evaluation, decorrelated reward signals, or a KL leash that stops before the peak is passed.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.96\linewidth]{fig4_reward_hacking.pdf}
+\caption{E3: reward hacking as deceptive descent. A policy optimized against a systematically biased proxy reward. \emph{Left:} over training, the measured proxy reward (dashed) climbs while true held-out quality (solid) peaks early and then declines as the nuisance attribute is exploited. \emph{Right:} against the KL budget from the reference policy, proxy reward rises monotonically while true quality traces the inverted-U of reward-model over-optimization. The optimizer sees only the proxy, so the quality loss is invisible from its own trajectory.}
+\label{fig:hacking}
+\end{figure}
+
+\subsection{E5: reward-model over-optimization in a synthetic RLHF-style pipeline (run)}
+\label{sec:e5}
+E3 isolates the over-optimization geometry with a hand-specified differentiable proxy. We now reproduce the same phenomenon in a \emph{synthetic RLHF-style} pipeline --- a contextual bandit with synthetic preferences, not a language model with human labels --- containing the four ingredients absent from the idealized version: preference data, a reward model \emph{learned} from those preferences, sampling-based policy optimization, and a held-out gold evaluator. In a contextual-bandit setting, a preference oracle ranks pairs of responses by true quality \emph{plus} a systematic length-like bias (a nuisance direction it over-rewards); a reward model $R_\phi$ is trained on these comparisons by the Bradley--Terry objective; and a Gaussian policy is optimized against $R_\phi$ by PPO (sampled actions, a clipped surrogate, and generalized advantage estimation against a learned value baseline) with a KL penalty to a supervised reference policy. The gold reward is never shown to the optimizer. This isolates the mechanism and tests whether it survives the move from regression and classification to learned-reward policy optimization; it is not a claim of coverage over production language-model RLHF, which the synthetic setting deliberately abstracts away.
+
+\paragraph{Results (Fig.~\ref{fig:rlhf}).} The reward model inherits the preference bias: its scores correlate with the nuisance direction beyond what gold quality explains (the mirror law applied to the reward model itself). Optimizing the \emph{learned} reward then reproduces deceptive descent: the reward-model score rises monotonically while held-out gold quality traces an inverted-U, rising from $-1.78$ to a peak of $-0.81$ and then declining to $-1.05$ as the policy exploits the cloned bias. Sweeping the KL coefficient $\beta$ confirms the structural remedy: a stronger leash monotonically preserves gold quality (peak gold rising from $-1.07$ at $\beta=0$ to $-0.33$ at $\beta=0.4$), recovering the standard practice of limiting reward-model over-optimization with a KL constraint. The effect of E3 is thus not an artifact of the idealized differentiable proxy: it persists when the reward is genuinely learned from preferences and the policy is genuinely optimized by sampling-based reinforcement learning.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.99\linewidth]{fig8_rlhf.pdf}
+\caption{\textbf{E5: reward-model over-optimization in a synthetic RLHF-style pipeline.} A reward model is learned by Bradley--Terry training from preference comparisons whose oracle carries a systematic bias, and a policy is optimized against it by PPO with a KL leash. \emph{(a)} The learned reward-model score (dashed) climbs monotonically while held-out gold quality (solid) rises then declines --- deceptive descent in reward space. \emph{(b)} A stronger KL coefficient $\beta$ preserves gold quality, limiting over-optimization. The optimizer never sees the gold signal.}
+\label{fig:rlhf}
+\end{figure}
+
+\paragraph{Mitigation: decorrelated references cancel inherited bias (run).} The framework predicts a concrete remedy, not only a diagnosis. Since a student trained on teacher $k$ clones that teacher's bias (its asymptotic error field is $b_k$), an ensemble of $K$ students \emph{averages} the inherited biases, with true risk governed by $\norm{\frac{1}{K}\sum_k b_k}^2$: \emph{decorrelated} biases (independent directions) cross-cancel as $\norm{b}^2/K$, while \emph{correlated} biases (a shared direction) do not shrink at all. We test this in the E1 linear setup with $K$ teachers carrying independent unit-norm biases (Regime C, $\norm{b}^2=1$). Ensembling decorrelated teachers drives true risk down as predicted --- $R^\star=0.527\pm0.068$ at $K{=}2$, $0.220\pm0.048$ at $K{=}4$, $0.131\pm0.025$ at $K{=}8$ (theory $1/K$; mean $\pm95\%$ CI over $12$ seeds), a $7.6\times$ reduction --- whereas an ensemble sharing a single bias direction stays pinned at $R^\star=0.999$ for every $K$ (Fig.~\ref{fig:mitigation}). Multiplicity alone buys nothing; \emph{decorrelation} cancels the inherited bias, exactly as Proposition~\ref{prop:undetect} predicts, and this is the empirical content of the ``decorrelate references'' recommendation (\S\ref{sec:practical}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.5\linewidth]{fig11_mitigation.pdf}
+\caption{\textbf{Mitigation by decorrelated ensembling (E1).} Ensembling $K$ teachers with \emph{independent} biases reduces the student ensemble's true risk as $\norm{b}^2/K$ (blue, on the theory line) --- a $7.6\times$ reduction at $K{=}8$ --- while teachers sharing one bias direction (red) give no reduction. Decorrelation, not multiplicity, cancels inherited bias.}
+\label{fig:mitigation}
+\end{figure}
+
+\paragraph{An $\epsilon$-stopping rule: how many decorrelated teachers it takes (run).} Modeling $K$ biases with per-teacher energy $\beta^2=\E\norm{b_k}^2$ and pairwise correlation $\rho=\E\inner{b_i}{b_j}/\beta^2$, the ensemble's true risk is
+\[
+R^\star_{\mathrm{ens}}(K) \;=\; \beta^2\!\left[\,\rho + \tfrac{1-\rho}{K}\,\right],
+\]
+confirmed across $\rho\in\{0,0.1,0.25,0.5\}$ (Fig.~\ref{fig:stopping}). This $\rho$-dependent ensemble risk is the classical combination-of-forecasts variance identity \citep{bates1969}, imported here to the inheritance of systematic reference bias; our contribution is the operational stopping rule and the irreducible-floor reading, not the formula. The reducible (decorrelated) part falls as $1/K$, so a target $R^\star_{\mathrm{ens}}\le\epsilon$ needs $K^\star(\epsilon)=\lceil(1-\rho)\beta^2/(\epsilon-\rho\beta^2)\rceil$ --- simply $\lceil\beta^2/\epsilon\rceil$ when $\rho=0$ --- while the \emph{correlated} part is an irreducible floor $\rho\beta^2$ that no $K$ removes (at $\rho=0.25$, $R^\star_{\mathrm{ens}}$ plateaus near $0.31$ and $\epsilon=0.1$ is unreachable). The operational difficulty is that $\beta^2$ is a true-error quantity, unmeasurable during training (Proposition~\ref{prop:undetect}); but the \emph{inter-teacher disagreement is observable}, $\E\norm{f_i-f_j}^2=2\beta^2(1-\rho)$, so $\hat\beta^2=\tfrac12\,\overline{\norm{f_i-f_j}^2}$ estimates the reducible energy and yields a ground-truth-free stopping rule $\hat K(\epsilon)=\lceil\hat\beta^2/\epsilon\rceil$. Its limitation is Proposition~\ref{prop:undetect} once more: disagreement \emph{cancels} the shared bias (correlated teachers agree), so it is blind to the floor and over-certifies --- at $\rho=0.5$ the rule stops at $\hat K=6$ while the true inherited bias is $\rho\beta^2+\epsilon=0.6$. Stated as a rule, $\hat K(\epsilon)$ is therefore a \emph{lower bound} on the teachers required --- it certifies the reducible bias to $\epsilon$ but leaves the shared floor $\rho\beta^2$ uncertified --- so bounding the true $K^\star$ needs external grounding (grading a teacher subsample on ground truth). Decorrelation-based mitigation thus drives the \emph{measurable} (decorrelated) bias below any $\epsilon$, but bounding the irreducible floor --- hence knowing whether $\epsilon$ is achievable at all --- requires grading a subsample of teachers against in-domain ground truth to recover $\beta^2$ and $\rho$. This is the calibration criterion (\S\ref{sec:calibration}) in operational form: ensembling shrinks what references disagree about, but only ground-truth contact bounds what they share.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.52\linewidth]{fig12_stopping.pdf}
+\caption{\textbf{$\epsilon$-stopping for decorrelated ensembling (E1).} Ensemble true risk $R^\star_{\mathrm{ens}}=\norm{b}^2[\rho+(1-\rho)/K]$ versus the number of teachers $K$, for bias correlations $\rho$. The decorrelated part falls as $1/K$ toward the irreducible floor $\rho\norm{b}^2$ (dotted); a target $\epsilon$ (dashed) is reachable only when it exceeds the floor. Because the floor is invisible to inter-teacher disagreement, a disagreement-based stopping rule must be backed by grading a few teachers against ground truth.}
+\label{fig:stopping}
+\end{figure}
+
+\paragraph{Reproducibility.} All synthetic experiments (E1--E6) run on CPU in seconds to minutes with no specialized hardware (the real-LLM E7 uses the GPU configuration of Table~\ref{tab:e7-spec}); we release code and seeds for E1--E3, E5--E6, the sensitivity analysis, and the multi-seed robustness sweep below. E2 and E5 use controlled, fully-specified synthetic tasks rather than external benchmarks. The released code runs under Python~3.11 with NumPy, PyTorch~2.x, scikit-learn, and Matplotlib; exact pinned versions and per-experiment seeds are listed in the repository \texttt{README}.
+
+\paragraph{Robustness across seeds.} To confirm the reported estimates are not seed artifacts, we re-ran E1 and E2 over twelve seeds with \emph{all} randomness --- data, ground truth, bias direction, noise, and initialization --- re-drawn each seed, and report means with $95\%$ confidence intervals. The calibration slope is $1.001\pm0.016$ (CI $[0.991,1.011]$; theory $1.0$) and the Regime-C plateau is $R^\star/\norm{b}^2 = 1.000\pm0.020$ (CI $[0.988,1.013]$), so the learner inherits exactly the bias energy in every draw; the Regime-B true risk stays small ($0.0045\pm0.0014$), confirming noise washes out; and the nonlinear MLP plateau lands at $R^\star/\norm{b}^2 = 1.004\pm0.0004$. For E2, the distilled student's out-of-distribution minority accuracy is $0.233\pm0.030$ --- statistically indistinguishable from the teacher's $0.235\pm0.031$, and separated from the clean-label student's $0.752\pm0.022$ by more than fifteen standard deviations --- while its agreement with the teacher is $0.993\pm0.002$: bias transfer (Regime C), survival under symmetric noise (Regime B; noisy-student minority accuracy $0.725\pm0.012$), and concealment-by-agreement are all stable across seeds. (Intervals use the Student-$t$ quantile; the sweep uses moderately reduced sample sizes and step counts for speed, so its means track but do not exactly reproduce the single-run figures.)
+
+\paragraph{Falsifiable predictions and kill conditions.} The framework is refutable; we state what would overturn each central claim. \emph{(i) Deceptive descent (Proposition~\ref{prop:deceptive}).} Under a systematically biased reference the learner's true risk converges to the bias energy ($R^\star_\infty=\norm{b}^2$) while its reference loss vanishes; this is falsified by a calibration slope reliably below $1$ --- true risk \emph{less} than the bias energy --- or by the absence of the proxy-up/gold-down divergence. The measured slope $1.001\pm0.016$ (E1) and the reward-space divergences of E3 and E5 are the tests. \emph{(ii) Undetectability (Proposition~\ref{prop:undetect}, substantive part).} The optimization trajectory carries no signal an $R_g$-minimizer could use to detect or avoid the inherited bias: agreement with the reference cannot reveal the reference's systematic error. This fails if a high-agreement learner were reliably low-bias; E1's two-reference check (each $R_g\to0$, yet RMS disagreement $1.38\pm0.16$) and E2 (distilled--teacher agreement $0.993$ while minority accuracy collapses to $0.23$) test it directly. The static unidentifiability of the proposition's first part is trivial and is \emph{not} what is tested; only this trajectory claim is. \emph{(iii) Cross-domain generality (\S\ref{sec:applications}).} The same bias/noise split is predicted to govern distillation, reward-model optimization, and recursive generation; the kill condition is a biased reference whose bias does \emph{not} transfer (gold flat or rising under a systematically biased reference while the proxy improves), or symmetric noise that \emph{does} transfer. E2, E3, E5, and E6 are the cross-domain tests; the zero-bias control in the E5 sweep --- where the reward model clones nothing (partial correlation $-0.04$) and gold does not decline (loss $0.01$) --- is the falsification control, and the bias-in/bias-out dose response is the positive prediction. \emph{(iv) Calibration and graduation (\S\ref{sec:calibration}).} The order-of-magnitude criterion predicts that a biased-but-more-accurate reference helps a weaker learner before its bias is cloned, while a comparable-accuracy learner is hurt immediately; it is falsified by a low-error learner that improves on true risk under a biased reference with no deceptive descent, or a weak learner that never improves before plateauing. Varying the reference/learner error ratio $r$ (Fig.~\ref{fig:calibration}) is the direct test: inherited true error tracks $r^2$, so a biased-but-accurate reference ($r<1$) helps a weak learner while a comparable one ($r\ge1$) is hurt, with no deceptive-descent-free improvement under a biased reference.
+
+\subsection{E7: real-LLM validation on Qwen3.5 (RLAIF and human RLHF, run)}
+\label{sec:e7}
+The experiments above are controlled and synthetic by design. We now test whether the same regime structure survives in real autoregressive language models under preference optimization. We post-train two instruction-tuned policies, Qwen3.5-0.8B and Qwen3.5-2B, by DPO ($\beta=0.1$, $200$ steps, two seeds unless noted) on a fixed $135$-pair factual-QA preference set, scoring true quality with a held-out keyword \emph{gold} grader kept strictly separate from the training reference. We use \emph{full} fine-tuning rather than LoRA deliberately: a low-rank adapter is itself one of the regularization-side mitigations of \S\ref{sec:e3} --- a restricted hypothesis class (Proposition~\ref{prop:nonrealizable}) plus prior anchoring --- and would \emph{attenuate} the very transfer we are measuring; full fine-tuning exposes the unmitigated effect and holds the training method identical across all arms, so that only the reference varies. Alongside the controlled arms we run cloud-judge RLAIF arms in which the reference is a real cloud LLM judge (GLM-5.1, Nemotron-3-Super) labeling on-policy generations under an induced verbosity bias; using an AI judge as the preference reference follows the RLAIF paradigm \citep{lee2023}, which reports RLAIF--RLHF parity, and our human-feedback arm below verifies the effect is not an artifact of AI judges. Per checkpoint we log reference/reward agreement, gold score, bias axes (mean length, confidence-marker rate), a diversity ratio, and KL-to-reference. Both the fixed-reference and the cloud-judge arms above use automated feedback --- scripted controlled-bias labels and an AI judge (RLAIF), respectively; we additionally run a controlled human-feedback (RLHF) arm in which an author supplies controlled-bias preference labels (Fig.~\ref{fig:e7rlhf}). Under the DPO/cross-entropy objective the gold decline is the analogue of the squared-loss plateau, exact only up to the softmax-Fisher modulation discussed for cross-entropy in App.~\ref{app:ce} (the asymptotic identity $R^\star_\infty=\norm{b}^2$ is literal only for squared loss). Runs used a single NVIDIA DGX Spark (GB10 Grace Blackwell, $128$\,GB unified LPDDR5X, ARM64); the RLAIF/controlled sweep took $3.82$ GPU-hours across both sizes and the human-feedback arm a further $2.31$ ($6.13$ total); the full configuration is in Table~\ref{tab:e7-spec}. All real-LLM arms use DPO directly on preference data; the PPO reward-model pathway is the synthetic E5 (\S\ref{sec:e5}), which Proposition~\ref{prop:preference} shows realizes the same mirror law.
+
+\paragraph{Deceptive descent, both sizes.} Under a biased reference, reference/reward agreement climbs while gold quality falls (Fig.~\ref{fig:e7}a): for 0.8B on the fixed systematic-bias arm, agreement rises $0.64\to0.84$ while gold drops $0.84\to0.42$; the extreme inverted arm drives agreement $0.10\to0.78$ while gold collapses to $0.04$ (2B: $0.12\to0.86$, gold $\to0.03$). The optimization succeeds on its measured objective while true quality declines --- deceptive descent in a real LLM.
+
+\paragraph{Matched error, opposite transfer.} The decisive control sets a stochastic-noise reference (Regime~B) and a fixed-systematic reference (Regime~C) at the \emph{same} $\approx\!30\%$ marginal preference-error rate. For 0.8B the separation is clean (Fig.~\ref{fig:e7}b, Table~\ref{tab:e7}): noise preserves gold ($0.83\pm0.10$, both seeds $\ge0.73$) while the matched systematic bias destroys it ($0.42\pm0.02$). The calibration ratios are nearly identical ($r\approx1.9$ for both), yet the residual gold error tracks the $r^2$ contamination floor only for the systematic arm; the noise sits well below it. Same marginal error, opposite transfer --- the empirical core of the B/C distinction, in an autoregressive model. For 2B the separation also holds: across $8$ seeds the noise arm washes out to $0.81\pm0.30$ while the matched systematic arm stays tight at $0.51\pm0.07$. The wide noise interval is informative rather than a failure --- it is driven by a single seed ($0.07$) on which the higher-capacity full-FT learner memorized the one fixed finite-sample noise draw, exactly the capacity-amplified memorization event the caveat of \S\ref{sec:regimes} predicts; the other seven seeds average $0.91\pm0.04$. The benign Regime-B behavior is thus recovered in the mean (and per-seed under resampled noise or mild regularization), so the matched-error B/C contrast is confirmed at \emph{both} model sizes.
+
+\paragraph{Bias dose-response.} Sweeping the systematic-wrong fraction $p$ drives gold monotonically down (Fig.~\ref{fig:e7}c): $0.88\to0.57\to0.38\to0.18\to0.04$ for 0.8B across $p\in\{0,.25,.5,.75,1\}$, with the calibration ratio climbing $0\to6.4$. The transition from washed-out noise to fully-cloned bias is graded, not a threshold.
+
+\paragraph{RLAIF judge bias and capacity.} The real verbosity-biased judge transfers its bias: the 0.8B policy nearly doubles its answer length ($14\to24$ tokens) while gold falls, more steeply for the stronger bias (mild $\to0.59$, high $\to0.14$). The 2B policy \emph{resists}: it also lengthens but keeps gold high (high-bias $0.80\pm0.09$; Fig.~\ref{fig:e7}d). This is the optimization-side weak-to-strong escape of \S\ref{sec:regimes} made concrete --- the stronger model's pretrained prior holds it near correct behavior, letting it satisfy the reference's surface feature (length) without abandoning true quality, whereas the smaller model must trade quality for the biased feature. The same robustness appears in the dose-response (2B above 0.8B at every intermediate $p$). It is a prior/optimization effect, not capacity-side bias-filtering: at full inversion ($p=1$) both sizes clone equally (gold $\to0.03$), where an unambiguous reference overwhelms the prior.
+
+\paragraph{Decorrelation and calibration.} Two judges biased in the \emph{same} direction agree $0.70$; decorrelating them (opposite biases) drops agreement to $0.50$ (both sizes) --- exactly the concealment-by-agreement of Proposition~\ref{prop:undetect} and the basis for decorrelated ensembling. The calibration ratio orders the arms as predicted: the faithful reference ($r\approx0$) improves gold ($0.84\to0.88$); every biased reference ($r>1$) degrades it; and the systematic arms' residual gold error tracks $r^2\cdot(\text{initial error})$.
+
+\paragraph{Grader audit (paraphrase tolerance).} We validated the keyword grader by re-grading the raw greedy generations of the grader-sensitive arms (gold, both judge-bias arms, and the matched systematic arm) on both sizes with a paraphrase-tolerant grader: case/markdown/Unicode-subscript normalization, number-word and synonym equivalence, and word-boundary matching over the expanded vocabulary. Its misses are dominated by genuine errors and degenerate non-answers, not correct-but-paraphrased answers --- the lenient grader changes final gold by at most $0.022$, a single Unicode-subscript false-negative (``H$_2$O'') that is \emph{equal} across sizes, and leaves every within-size ordering and the cross-size pattern unchanged (Table~\ref{tab:e7-grader}). In particular the 0.8B judge-high collapse is a genuine degeneration --- the model emits verbose meta-text without ever answering --- and the 2B judge-high answers are genuinely correct \emph{and} verbose, so neither the collapse nor the 2B resistance is a grading artifact; the small base-rate differences are likewise not a grading artifact. Cross-size claims nonetheless rest on within-size deltas under one fixed grader.
+
+\paragraph{Human feedback (RLHF).} To rule out that the transfer is an artifact of AI judges or scripted rules, we add a controlled human-feedback arm: one author served as a controlled-bias annotator, labeling on-policy preference pairs through a web portal under three banners --- gold (pick the more correct answer), length (always pick the longer answer, ignoring correctness), and noise (pick at random) --- for both sizes ($50$ pairs/condition, DPO at the same $\beta=0.1$, $200$ steps, three seeds). The realized-bias audit, computed from the labels, confirms the conditions: gold is faithful ($98$--$100\%$ correct, length-neutral), length is a clean systematic bias ($100\%$ longer, $48\%$ correct), and noise is near-zero-mean on correctness ($54\%$). The result reproduces the RLAIF capacity pattern with real human labels (Fig.~\ref{fig:e7rlhf}, Table~\ref{tab:e7-rlhf}): under the human length bias the 0.8B policy collapses (final gold $0.14\pm0.01$, indistinguishable from the AI judge's $0.14$) while the 2B policy resists ($0.48\pm0.07$), against faithful-arm controls of $0.80$ and $0.85$. The 2B resists less than under the softer AI judge ($0.80$) because the human bias is maximal ($100\%$ longer); the partial erosion is consistent with the dose-response and the projected-inheritance bound of Proposition~\ref{prop:nonrealizable}. The length-arm grader audit again moves final gold by $\le0.022$, and the 0.8B collapse is the same genuine degeneration (verbose meta-text, no answer). One honest wrinkle: the annotator's ``random'' noise picks leaked a $78\%$ length lean --- a small illustration that human preferences carry latent systematic bias even when none is intended --- so the noise arm is reported as a single-draw point. No external human subjects were involved: the labels are author-provided preference judgments over factual-QA pairs with no personal data or sensitive attributes, so IRB review was not applicable.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_e7_results.pdf}
+\caption{E7, real-LLM RLAIF on Qwen3.5 (full-FT DPO). \textbf{(a)} Deceptive descent: reference/reward agreement rises while gold quality falls (0.8B, systematic bias). \textbf{(b)} Matched $\approx\!30\%$ error, opposite transfer: stochastic noise (Regime~B) preserves gold while systematic bias (Regime~C) destroys it; the 2B noise interval (8 seeds) is widened by a single fixed-noise-memorization seed, but its mean still separates cleanly from the matched biasfix arm. \textbf{(c)} Graded bias dose-response; the larger model is more robust at every intermediate $p$. \textbf{(d)} A real verbosity-biased judge collapses 0.8B gold but the 2B prior resists (optimization-side weak-to-strong escape). Error bars are seed s.d.}
+\label{fig:e7}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.74\textwidth]{fig_e7_rlhf.pdf}
+\caption{E7 human-feedback (RLHF) arm: real author-provided controlled-bias labels (DPO, 3 seeds). \textbf{(a)} Faithful (gold) vs.\ length-bias conditions --- the 0.8B policy collapses under the human length bias while the 2B partially resists. \textbf{(b)} The same length/verbosity bias under an AI judge (RLAIF) vs.\ a human annotator (RLHF): the 0.8B collapse is near-identical ($0.14$ in both), and the 2B resists in both, less so under the human's maximal $100\%$-longer bias than the softer AI judge. Error bars are seed s.d.}
+\label{fig:e7rlhf}
+\end{figure}
+
+\begin{table}[t]
+\centering\small
+\caption{E7 real-LLM results: final gold quality (mean\,$\pm$\,s.d. over seeds), held-out keyword grader. Identical training method (full-FT DPO, $\beta=0.1$, $200$ steps) across all arms; only the reference varies (\texttt{biasfix} is the fixed systematic-bias / Regime~C arm). Base gold: 0.8B $=0.84$, 2B $=0.78$. Matched noise/\texttt{biasfix} arms use $N{=}8$ seeds; all other arms $N{=}2$.}
+\label{tab:e7}
+\begin{tabular}{llcccl}
+\hline
+Reference & Regime & ref err & 0.8B gold & 2B gold & reading \\
+\hline
+faithful (gold) & A & $0.00$ & $0.88\pm.01$ & $0.86\pm.03$ & reference helps \\
+noise $0.30$ & B & $0.29$ & $0.83\pm.10$ & $0.81\pm.30^{\dagger}$ & noise washes out \\
+biasfix $0.30$ & C & $0.31$ & $0.42\pm.02$ & $0.50\pm.03$ & bias transfers \\
+$p_{\mathrm{wrong}}{=}0.5$ & B$\to$C & $0.41$ & $0.38\pm.04$ & $0.47\pm.06$ & graded \\
+judge mild & C & $0.50$ & $0.59\pm.21$ & $0.76\pm.00$ & RLAIF bias \\
+judge high & C & $0.53$ & $0.14\pm.14$ & $0.80\pm.09$ & 2B prior resists \\
+inverted & C & $1.00$ & $0.04\pm.02$ & $0.03\pm.01$ & full clone \\
+\hline
+\end{tabular}\\[3pt]
+{\footnotesize $^{\dagger}$2B noise over $8$ seeds: the mean $0.81$ washes out as Regime~B predicts; the wide s.d.\ is driven by one fixed-noise-memorization outlier seed ($0.07$), the other seven averaging $0.91\pm0.04$.}
+\end{table}
+
+\begin{table}[t]
+\centering\small
+\caption{E7 human-feedback (RLHF) arm: final gold quality (mean\,$\pm$\,s.d.). Author-provided controlled-bias labels, full-FT DPO, $\beta=0.1$, $200$ steps; $3$ seeds for the gold and length arms. The 0.8B policy collapses under the human length bias (matching the AI judge's $0.14$) while the 2B partially resists. The faithful (gold) arm uses human gold labels on the smaller $50$-pair set, so its $0.80$/$0.85$ values reflect annotator residual error and sampling relative to the pre-DPO base ($0.84$/$0.78$, Table~\ref{tab:e7}) rather than a base-model regression.}
+\label{tab:e7-rlhf}
+\begin{tabular}{lccl}
+\hline
+Annotator banner & 0.8B gold & 2B gold & reading \\
+\hline
+gold (faithful, A) & $0.80\pm.04$ & $0.85\pm.06$ & reference helps \\
+length (Regime C) & $0.14\pm.01$ & $0.48\pm.07$ & human length bias transfers \\
+noise (single draw)$^{\ddagger}$ & $0.33$ & $0.49$ & length-leaning ``random'' \\
+\hline
+\end{tabular}\\[3pt]
+{\footnotesize $^{\ddagger}$The annotator's ``random'' picks leaked a $78\%$ length lean, so the noise arm is reported as a single-draw point and is \emph{not} used as primary Regime-B evidence (see text).}
+\end{table}
+
+\section{Related Work}
+\label{sec:related}
+
+The ingredients of this paper are individually well established. Knowledge distillation and the transfer of soft-label information originate with \citet{hinton2015}; the memorization of label noise and the capacity-dependence of generalization are studied by \citet{zhang2017} and \citet{arpit2017}; learning from noisy labels and the random/systematic distinction appear in \citet{natarajan2013} and subsequent robust-learning work. Reward hacking and specification gaming are framed by \citet{amodei2016} and characterized by \citet{skalse2022}, and the over-optimization of proxy rewards is measured by \citet{gao2023}; sycophancy in language models is documented by \citet{perez2022} and \citet{sharma2023}. Model collapse under recursive training on generated data is reported by \citet{shumailov2024}; self-distillation by \citet{furlanello2018}. Shortcut learning and spurious correlations are surveyed by \citet{geirhos2020}. The calibration analogy draws on the test-accuracy-ratio convention of measurement science.
+
+\paragraph{Learning from noisy labels and loss correction.} A mature line of work corrects for label noise when its structure is known: unbiased risk estimators that reweight a surrogate loss so its expectation matches the clean risk \citep{natarajan2013}, forward/backward loss correction through an estimated noise-transition matrix \citep{patrini2017}, and disagreement-based methods such as co-teaching that exploit two networks' differing error sets \citep{han2018}. The mirror decomposition clarifies both the reach and the limits of these methods in the imitation setting. Their guarantees attach to the \emph{noise} regime~(B): a zero-mean corruption whose expectation can be undone given its model --- exactly the component the mirror law predicts washes out under averaging. Systematic reference bias (regime~C) differs in kind; it survives in expectation, so no reweighting of an unlabelled imitation loss can remove it, and (Proposition~\ref{prop:undetect}) the imitation signal does not even identify it. Loss correction therefore needs what the calibration criterion needs --- contact with ground truth (here, a noise/bias model estimated from clean data) rather than the reference signal alone. Co-teaching is the supervised analogue of the decorrelated-reference mitigation of \S\ref{sec:experiments}: two error sets cancel only insofar as they are independent, and shared bias (correlated errors) defeats both, the floor of Fig.~\ref{fig:stopping}. Two recent rigorous treatments of self-distillation are the closest estimator-level antecedents: \citet{borup2021} give a closed-form optimal interpolation weight between the teacher and the learner's initialization, and \citet{das2023} show the optimal teacher-vs-ground-truth mixing weight is noise-dependent (and can exceed one under high label noise). Both are special cases of the calibration/graduation logic (\S\ref{sec:calibration}), specific to self-distillation where the mirror law spans distillation, RLHF, and recursive collapse.
+
+\paragraph{Weak-to-strong generalization and reward-model ensembles.} Two recent literatures instantiate the mirror law at language-model scale. In weak-to-strong generalization \citep{burns2023}, a strong student fine-tuned on a weak teacher's labels learns to emulate the supervisor's mistakes --- Proposition~\ref{prop:reproduction} observed empirically --- yet often exceeds the teacher, which Proposition~\ref{prop:nonrealizable} and the early-stopping remark explain as the student's pretrained prior and regularization keeping it short of the teacher's error field. In RLHF, reward-model \emph{ensembles} are used to curb over-optimization \citep{coste2023,rame2024warm}; \citet{eisenstein2023} find that ensembling mitigates but does not eliminate reward hacking because the reward models exhibit similar error patterns, and that pretraining-seed diversity helps more than fine-tuning-seed diversity. Our $\epsilon$-stopping analysis (\S\ref{sec:experiments}) is the quantitative explanation: shared error patterns are correlated bias, leaving the irreducible floor $\rho\beta^2$ that no ensemble size removes, while greater decorrelation (pretraining-seed or cross-family diversity) lowers $\rho$ and hence the floor.
+
+Against this background, the present contribution is integrative: the mirror decomposition as the organizing identity, the three-regime taxonomy with the explicit noise/bias asymmetry, the trajectory-undetectability result, the calibration criterion with its graduation corollary, and the demonstration that a single structure governs distillation, reward-model over-optimization, and recursive model collapse.
+
+\section{What Is and Is Not Novel}
+\label{sec:novelty}
+
+We state this explicitly to aid review and to avoid overclaiming.
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\item \textbf{Not novel.} The decomposition~\eqref{eq:risk-decomp}, the reproduction property (Proposition~\ref{prop:reproduction}), the unbiasedness of resampled-noise gradients (Regime B), and the noise/bias asymmetry are standard facts about least-squares estimation and imitation; the $\rho$-dependent ensemble floor is the classical combination-of-forecasts result \citep{bates1969}. Each application phenomenon (distillation bias, reward hacking, model collapse, shortcut inheritance) is independently documented.
+\item \textbf{Novel or novel-adjacent.} The framing of the observable signal as a difference of error fields and its use as a unifying lens; the explicit three-regime taxonomy; the deceptive-descent and trajectory-undetectability statements as the operative practical content (Propositions~\ref{prop:deceptive}--\ref{prop:undetect}); the calibration criterion with the test-accuracy-ratio analogy and graduation corollary; the non-realizable projection refinement (Proposition~\ref{prop:nonrealizable}) and its reconciliation of weak-to-strong generalization; the $\epsilon$-stopping result that quantitatively explains why decorrelated reward-model ensembles help yet leave an irreducible floor; the Bradley--Terry identifiability result (Proposition~\ref{prop:preference}) that makes the preference-learning (RLHF/RLAIF) instance native rather than analogical; and the unification spanning distillation, reward-model over-optimization, and recursive model collapse.
+\item \textbf{Caveats.} The clean conclusions assume squared loss and, in their \emph{exact} form, reference realizability --- relaxed to a projection decomposition by Proposition~\ref{prop:nonrealizable} --- and (for Regime B) resampling with controlled capacity; the finite-data memorization remark bounds their scope, and the cross-entropy case is treated in Appendix~\ref{app:ce}. The calibration constant is a convention, not a derived threshold. E1 (linear and MLP), E2 (spurious-correlation classification), E3 (reward-model over-optimization), E5 (synthetic RLHF-style pipeline), E6 (recursive distillation), and the real-LLM E7 (RLAIF and human RLHF), together with the decorrelated-ensembling mitigation, are all run and reported in \S\ref{sec:experiments} and Appendix~\ref{app:robust} (Figs.~\ref{fig:regimes}--\ref{fig:mitigation}, with the real-LLM results in Figs.~\ref{fig:e7}--\ref{fig:e7rlhf} and Tables~\ref{tab:e7}--\ref{tab:e7-rlhf}).
+\end{itemize}
+
+\section{Practical Recommendations}
+\label{sec:practical}
+The theory and experiments yield a short, uniform checklist for any pipeline that trains against a reference (a teacher network, a reward model, a synthetic-data generator, or a human supervisor).
+
+\begin{center}
+\fbox{\begin{minipage}{0.95\linewidth}
+\small
+\begin{enumerate}[leftmargin=1.4em,itemsep=3pt,topsep=3pt]
+\item \textbf{Validate against ground truth, not against the reference.} In-distribution agreement with the teacher is structurally blind to inherited bias (Proposition~\ref{prop:undetect}); in E2 a distilled student agreeing with its teacher $99.5\%$ of the time had nonetheless cloned a below-chance minority-group bias. Hold out true labels, or an out-of-distribution / minority slice, and measure there.
+\item \textbf{Watch for deceptive descent.} A falling loss-against-the-reference with flat or rising error on a ground-truth probe is the signature of reward hacking, sycophancy, or shortcut inheritance (Proposition~\ref{prop:deceptive}). Track the two curves separately; never report only the former.
+\item \textbf{Decorrelate references.} Multiplicity is not enough --- only references with \emph{independent} biases provide detection power; systematic disagreement between them flags the bias that agreement conceals. Ensembling $K$ decorrelated teachers reduces inherited bias as $1/K$ (Fig.~\ref{fig:mitigation}), while correlated teachers give no reduction. To size the ensemble, $K\approx\beta^2/\epsilon$ decorrelated teachers reach true-risk $\epsilon$; estimate the reducible bias $\beta^2(1-\rho)$ from inter-teacher disagreement, but grade a few teachers against ground truth to bound the irreducible shared floor $\rho\beta^2$ (Fig.~\ref{fig:stopping}). Prefer cross-vendor or cross-construction supervision for high-stakes review.
+\item \textbf{Apply the calibration heuristic.} A reference helps only while it is substantially more accurate than the learner (the order-of-magnitude criterion of \S\ref{sec:calibration}). Past that point, switch to a better reference or to ground truth; a partly-trained reference can teach a much weaker learner but not a comparable one. For an LLM, where the learner's initial error is not directly measurable, estimate it from the pre-training or pre-DPO model's gold score on the probe set.
+\item \textbf{Audit teacher bias before scaling iterated distillation.} Systematic error compounds across generations of model-on-model training (model collapse); diversity (noise-like) contracts while bias accumulates. Check the reference's out-of-distribution behavior before distilling from it at scale.
+\end{enumerate}
+\end{minipage}}
+\end{center}
+
+\subsection{The Mirror Audit Protocol}
+\label{sec:audit}
+The recommendations above compose into a single reusable procedure --- the \emph{Mirror Audit Protocol} --- for deciding whether a reference may be trusted, when it must be replaced, and whether an observed training success is real. It needs only a small ground-truth probe set and, ideally, one decorrelated second reference.
+
+\begin{center}
+\fbox{\begin{minipage}{0.95\linewidth}
+\small
+\begin{enumerate}[leftmargin=1.6em,itemsep=3pt,topsep=3pt]
+\item \textbf{Grade the reference.} Score it on a small held-out \emph{gold} set to estimate its error rate. This is the one step that breaks the learner--reference symmetry (Proposition~\ref{prop:undetect}), so it is not optional.
+\item \textbf{Estimate the calibration ratio} $r=\text{(reference error)}/\text{(learner error)}$ (\S\ref{sec:calibration}). $r\!\ll\!1$: the reference may teach; $r\!\approx\!1$: break-even; $r\!>\!1$: it will harm. Asymptotic contamination is the fractional $r^2$ floor.
+\item \textbf{Run matched controls.} If a planted axis is suspected (length, tone, a shortcut feature), build matched Regime-B (resampled noise) and Regime-C (fixed systematic) versions at the \emph{same} marginal error rate; only the systematic one should transfer. Divergence confirms the failure is bias, not noise.
+\item \textbf{Track two curves, never one.} Log the reference/reward score and a gold score \emph{separately} at every checkpoint, with the suspected bias axis (mean length, confidence-marker rate) and KL-to-reference. Reward-up / gold-down / bias-axis-up is deceptive descent (Proposition~\ref{prop:deceptive}).
+\item \textbf{Measure inter-reference disagreement.} With a second reference, systematic disagreement flags a bias that agreement conceals; estimate the reducible bias $\beta^2(1-\rho)$ from disagreement and the irreducible shared floor $\rho\beta^2$ by grading both against gold (\S\ref{sec:experiments}).
+\item \textbf{Stop, graduate, or decorrelate.} As $r$ approaches the calibration boundary, stop trusting the reference: halt early (the KL / early-stopping leash), graduate to a better reference or ground truth, or ensemble $K\!\approx\!\beta^2/\epsilon$ decorrelated references to drive the reducible bias to $\epsilon$ (Fig.~\ref{fig:stopping}).
+\end{enumerate}
+\end{minipage}}
+\end{center}
+
+\noindent Steps 1--2 are cheap (a few hundred gold labels); steps 3--6 reuse quantities the pipeline already computes. The protocol's one irreducible requirement is contact with ground truth: by Proposition~\ref{prop:undetect}, no amount of reference-only monitoring can substitute for it.
+
+\subsection{Deployment uses}
+\label{sec:deployment}
+The same procedure applies wherever a system is trained or evaluated against a reference rather than ground truth, without overclaiming beyond the results above.
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\item \textbf{Reward-model and AI-judge audits.} Grade the reward model or LLM judge against a small gold set and track reward and gold curves separately with bias-axis probes (length, confidence-marker rate, refusal rate); reward rising while gold stalls and a bias axis climbs is the deceptive-descent trigger to tighten the KL leash (lower the KL budget), graduate the reference, or stop (Propositions~\ref{prop:deceptive},~\ref{prop:preference}).
+\item \textbf{Distillation and compression.} The non-realizable bound (Proposition~\ref{prop:nonrealizable}) says a smaller student inherits only the representable part of teacher bias; report teacher agreement, gold accuracy, and bias-slice accuracy together, since agreement with the teacher is structurally blind to inherited bias (Proposition~\ref{prop:undetect}).
+\item \textbf{Synthetic-data governance.} Recursive generation contracts noise but retains or accumulates systematic bias (\S\ref{sec:e6}); refresh against ground truth periodically and diversify generators by \emph{decorrelated} error rather than mere multiplicity.
+\item \textbf{Evaluator and vendor selection.} Compare candidate judges or teachers with gold probes and a decorrelated second reference; the calibration ratio $r$ (\S\ref{sec:calibration}) supplies a single per-reference trust threshold, and inter-reference disagreement flags the bias that agreement conceals.
+\item \textbf{Release gates.} Require reward/gold/bias-axis curves before promoting a model, so that a falling internal validation loss is never the only control on a deployment decision.
+\end{itemize}
+
+\section{Conclusion}
+
+A learner trained against a reference optimizes its disagreement with the reference, never its error against the world. The mirror law makes this precise: the observable residual is the difference of the learner's and the reference's deviations from truth, so an expressive learner converges to the reference, inheriting whatever is systematic in it. Noise washes out; bias does not; and in the biased regime the training curve reports success while the true error converges onto the reference's distortion --- a failure invisible from the trajectory and curable only by ground truth or decorrelated supervision. The same structure, and the same calibration criterion for when a reference may be trusted and when it must be replaced, describes distillation pipelines, reward-model over-optimization, and recursive model collapse. The practical recommendation is uniform across these domains: measure against the world, not only against the teacher; and decorrelate your references, because agreement with a mirror cannot reveal the mirror's flaws.
+
+\section*{Reproducibility Statement}
+The E1 design in \S\ref{sec:experiments} fully specifies data generation, architectures, conditions, metrics, and predictions; all experiments (E1--E3, E5, E6, the real-LLM E7, and the sensitivity analysis) were run with fixed seeds and the code is released alongside this paper. The synthetic experiments (E1--E6) use controlled, fully-specified tasks; the real-LLM E7 uses open-weight Qwen3.5 models (Apache-2.0) and is fully specified in Appendix~\ref{app:e7} (Table~\ref{tab:e7-spec}), including hardware, optimizer settings, the dataset and grader, and the judge configuration. For E7 we release the preference pairs, controlled labels, judge prompts, raw generations at evaluation checkpoints, metric logs, and plotting scripts. The RLHF arm's preference labels were provided by an author serving as a controlled-bias annotator; no external human subjects were recruited and no personal data or sensitive attributes were collected, so IRB review was not applicable.
+
+
+\subsubsection*{Broader Impact Statement}
+This work is diagnostic: it characterizes when training a model against an imperfect reference causes the model to inherit the reference's systematic bias, and it shows that such inheritance is invisible to the standard practice of validating a learner against the reference it was trained on. The intended impact is to make a common, under-examined failure mode legible and to motivate cheap mitigations -- ground-truth evaluation and decorrelated supervision. The same analysis could in principle inform an actor seeking to propagate a bias through a distillation or reward-modeling pipeline; we judge this risk low, since the mechanism (a learner imitating a biased teacher) is already widely known, and the paper's contribution is detection and mitigation rather than exploitation. The Mirror Audit Protocol (\S\ref{sec:practical}) is a concrete defense: it makes systematic bias in a training pipeline easier to \emph{detect}, not easier to introduce.
+
+\bibliography{main}
+\bibliographystyle{tmlr}
+
+\clearpage
+\appendix
+
+\section{Experimental Details}
+
+\subsection{E7 specification (real-LLM RLAIF and controlled human-feedback RLHF)}
+\label{app:e7}
+Table~\ref{tab:e7-spec} consolidates the E7 configuration for reproducibility. The full sweep ran on a single NVIDIA DGX Spark (GB10 Grace Blackwell, $128$\,GB unified LPDDR5X @ $273$\,GB/s, ARM64; torch $2.11.0$+cu130, CUDA $13.0$, \texttt{transformers} from \texttt{main}), taking $1.18$ GPU-hours for 0.8B and $2.64$ for 2B ($3.82$ total for the RLAIF/controlled sweep; the human-feedback RLHF arm adds $0.97{+}1.35=2.31$, for $6.13$ GPU-hours overall). The two matched-error arms use $8$ seeds, the RLHF gold/length arms $3$, all other arms $2$.
+
+\begin{table}[h]
+\centering\small
+\caption{Consolidated E7 configuration (real-LLM RLAIF and controlled human-feedback RLHF on Qwen3.5).}
+\label{tab:e7-spec}
+\begin{tabular}{ll}
+\hline
+Policy models & \texttt{Qwen/Qwen3.5-0.8B}, \texttt{Qwen/Qwen3.5-2B} (Apache-2.0; instruction-tuned chat, not \texttt{-Base}; non-thinking mode, default) \\
+Optimization & DPO, \emph{full} fine-tuning (all parameters), AdamW, bf16, gradient checkpointing \\
+Hyperparameters & $\beta=0.1$, lr $=5\times10^{-6}$, batch $=4$, $200$ steps, seeds $\{0,1\}$ ($\{0\text{--}7\}$ for matched B/C; $\{0,1,2\}$ for RLHF gold/length); reference frozen \\
+Dataset & fixed curated factual-QA set: $45$ questions $\to 135$ (correct, wrong) pairs, \\
+ & identical across sizes and conditions, $100\%$ gold contrast \\
+Controlled conditions & gold (A); random; inverted; $p_{\mathrm{wrong}}\in\{.25,.5,.75\}$; \\
+ & noise $\{.2,.3\}$ (Regime~B, random subset); biasfix $\{.2,.3\}$ (Regime~C, fixed subset) \\
+Gold grader & held-out word-boundary keyword match on accepted-answer keys, \\
+ & strictly separate from the training reference \\
+RLAIF judges & GLM-5.1, Nemotron-3-Super (Ollama \texttt{/api/chat}, temperature $0$); \\
+ & on-policy generations (temperature $1.0$, top-$p$ $0.95$), $n=400$ comparisons/arm \\
+Induced judge bias & prompt instruction: mild ``slightly prefer longer'', high ``strongly prefer longer'' \\
+Per-checkpoint logs & reward/reference agreement, gold, mean length, confidence-marker rate, \\
+ & diversity ratio, KL-to-reference (every $50$ steps) \\
+Hardware / runtime & $1\times$ NVIDIA DGX Spark (GB10, 128\,GB unified, ARM64); RLAIF $3.82$ + RLHF $2.31 = 6.13$ GPU-hours \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{Gold-grader audit (seed-0 greedy generations): keyword grader vs.\ a paraphrase-tolerant grader (normalization $+$ number-word/synonym equivalence, word-boundary matching). Maximum change $0.022$; all within-size orderings and the cross-size pattern preserved, confirming the keyword grader is not a verbosity artifact.}
+\label{tab:e7-grader}
+\begin{tabular}{lcccc}
+\hline
+ & \multicolumn{2}{c}{0.8B} & \multicolumn{2}{c}{2B} \\
+arm & keyword & lenient & keyword & lenient \\
+\hline
+gold & $0.867$ & $0.867$ & $0.889$ & $0.889$ \\
+judge mild & $0.822$ & $0.844$ & $0.778$ & $0.800$ \\
+judge high & $0.000$ & $0.000$ & $0.711$ & $0.711$ \\
+biasfix $0.30$ & $0.444$ & $0.444$ & $0.467$ & $0.467$ \\
+\hline
+\end{tabular}
+\end{table}
+\label{app:details}
+All synthetic experiments (E1--E6) are seeded and run on CPU; the real-LLM E7 uses the GPU configuration of Table~\ref{tab:e7-spec}. Code is released with the paper.
+
+\begin{table}[h]
+\caption{Hyperparameters for E1 (regression, \S\ref{sec:experiments}). The ground-truth MLP weights and all stochastic draws use seed $0$ unless a quantity is being swept; multi-seed results report seeds $0\text{--}11$.}
+\label{tab:e1}
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Setting & Value \\
+\hline
+Input dimension $d$ & $20$ (linear) \,/\, $10$ (MLP) \\
+Learner & linear \,/\, 2-layer $\tanh$ MLP, width $64$ \\
+Ground truth $\fstar$ & random linear (linear) \,/\, frozen random MLP (MLP) \\
+Training set size $N$ & $4000$ (linear) \,/\, $2000$ (MLP) \\
+Optimizer & full-batch GD (linear) \,/\, momentum $0.9$ GD (MLP) \\
+Learning rate & $0.3$ (linear) \,/\, $0.05$ (MLP) \\
+Steps & $150$ (linear) \,/\, $6000$ (MLP) \\
+True-target norm $\norm{w^\star}$ & $2$ \\
+Bias energy $\norm{b}^2$ & swept over $[0.06, 4.0]$ (Regime C / calibration) \\
+Noise std $\sigma_\eta$ & $1.0$ (Regime B), $0$ otherwise \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[h]
+\caption{Hyperparameters for E2 (spurious-correlation classification, \S\ref{sec:e2}).}
+\label{tab:e2}
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Setting & Value \\
+\hline
+Core / spurious dimensions & $6$ / $6$ \\
+Core class mean, std $(\mu_\mathrm{core},\sigma_\mathrm{core})$ & $(1.0, 1.0)$ \\
+Spurious mean, std $(\mu_\mathrm{spur},\sigma_\mathrm{spur})$ & $(2.6, 0.45)$ (clean, high-margin shortcut) \\
+Teacher correlation $\rho_\mathrm{teacher}$ & $0.97$ (main) \\
+Teacher capacity / steps & width $8$, early-stopped at $1200$ \\
+Student pool correlation $\rho_\mathrm{pool}$ & $0.65$ \\
+Student capacity / steps & width $64$, $4000$ \\
+Optimizer & momentum $0.9$ GD, learning rate $0.05$ \\
+Symmetric label-noise rate & $0.20$ \\
+OOD test correlation & $\rho=0.50$ \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[h]
+\caption{Hyperparameters for E3 (controlled proxy-reward optimization, \S\ref{sec:e3}).}
+\label{tab:e3}
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Setting & Value \\
+\hline
+Response dimension $d$ & $8$ \\
+True quality $q^\star(z)$ & $(z\cdot v) - \tfrac12\norm{z}^2$, legitimate direction $v$ \\
+Proxy bias & $+\lambda\,(z\cdot u)$, nuisance direction $u \perp v$ \\
+Bias magnitude $\lambda$ & $1.2$ (main); swept over $[0,2]$ (App.~\ref{app:robust}) \\
+KL penalty $\beta$ & $0.01$ (main); swept over $[0.005,0.5]$ (App.~\ref{app:robust}) \\
+Policy std $\sigma$ & $1.0$ \\
+Optimizer / lr / steps & gradient ascent on policy mean / $0.04$ / $500$ \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\section{Sensitivity Analysis}
+\label{app:robust}
+The effects reported in the main text are smooth in their controlling parameters, not artifacts of a single setting. We sweep the parameters that govern each regime: model capacity, training-set size, and noise rate for the benign-versus-memorization boundary of Regime~B (E4); the teacher's bias strength for distillation transfer (E2); and the proxy-bias magnitude and KL penalty for over-optimization (E3); and the preference-signal bias strength for reward-model over-optimization in the synthetic RLHF-style pipeline (E5).
+
+\paragraph{E4: the Regime-B boundary --- capacity, sample size, and noise rate (Fig.~\ref{fig:sensitivity}).} Regime~B is benign only \emph{in expectation under resampling and capacity control} (\S\ref{sec:regimes}); we map where it degrades, using random-feature ridge regression against a zero-mean noisy reference (full setup in the released code). \emph{(a)} With capacity fixed, the learner's true risk $R^\star$ falls monotonically as the training set grows, from $0.62$ at $N=50$ to $0.02$ at $N=8000$: more data averages the noise out. \emph{(b)} With data fixed ($N=400$), increasing capacity drives $R^\star$ up as the learner begins to interpolate the fixed noise, peaking sharply at the interpolation threshold $p\approx N$ (min-norm fit) --- the benign regime passing into Regime-C-like memorization --- while weight-decay (ridge) regularization flattens the curve, cutting the peak $R^\star$ from ${\sim}10^{3}$ to $0.14$ and recovering the benign regime across all capacities. \emph{(c)} Sweeping the noise level, $R^\star$ grows with the noise variance when the learner interpolates ($p>N$) but stays at the floor when it averages ($p\ll N$): at $\sigma=1.0$, $R^\star=1.14$ versus $0.02$, a $50{\times}$ gap. Unbiased noise costs true error \emph{only} when it is memorized; under averaging or mild regularization it washes out, exactly as the taxonomy claims. This is the empirical counterpart of the finite-data memorization caveat (\S\ref{sec:regimes}) and addresses the capacity, sample-size, and noise-rate sensitivity directly.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.99\linewidth]{fig7_sensitivity.pdf}
+\caption{\textbf{E4: sensitivity of the benign noise regime (Regime B).} Random-feature ridge regression against a zero-mean noisy reference. \emph{(a)} True risk $R^\star$ falls as the training set grows (capacity fixed): the noise averages out. \emph{(b)} At fixed data, increasing capacity drives $R^\star$ up at the interpolation threshold $p\approx N$ (memorization of the fixed noise); weight decay (ridge) flattens it. \emph{(c)} $R^\star$ grows with the noise level only when the learner interpolates ($p>N$); under averaging ($p\ll N$) it stays at the floor. The benign regime degrades into Regime-C-like memorization with scarce data, excess capacity, and no regularization.}
+\label{fig:sensitivity}
+\end{figure}
+
+\paragraph{E2: bias transfer scales with teacher bias (Fig.~\ref{fig:e2robust}).} Sweeping the teacher's spurious-correlation strength $\rho_\mathrm{teacher}$ from $0.70$ to $0.99$, the distilled student's out-of-distribution accuracy tracks the teacher's almost exactly across the entire range (the two curves are nearly coincident), declining from $0.83$ to $0.58$ as the teacher becomes more biased, while the clean-label student stays flat at $0.82$ and the symmetric-noise student near $0.80$. The student inherits precisely the bias the teacher carries, monotonically; the distill-versus-clean gap opens smoothly rather than at a threshold.
+
+\paragraph{E3: over-optimization is smooth and mitigable (Fig.~\ref{fig:e3robust}).} The true-quality loss from over-optimizing the biased proxy grows smoothly with the bias magnitude $\lambda$, from $0$ at $\lambda=0$ (no bias, no hacking) to $1.56$ at $\lambda=2.0$. Independently, a stronger KL penalty $\beta$ graded-ly mitigates the hacking: increasing $\beta$ from $0.005$ to $0.5$ lifts the converged true quality from $-0.21$ toward $+0.12$ as the converged KL budget shrinks, recovering the standard practice of using a KL leash to limit reward-model over-optimization.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.62\linewidth]{fig5_e2_robustness.pdf}
+\caption{E2 robustness. Out-of-distribution accuracy as the teacher's spurious-correlation strength varies. The distilled student (dashed) tracks the biased teacher (gray) almost exactly, while clean-label and symmetric-noise students remain robust.}
+\label{fig:e2robust}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.96\linewidth]{fig6_e3_robustness.pdf}
+\caption{E3 robustness. \emph{(a)} The true-quality loss from over-optimization grows smoothly with the proxy bias magnitude $\lambda$. \emph{(b)} A stronger KL penalty $\beta$ graded-ly recovers true quality (each point a converged run; smaller KL budget, higher true quality).}
+\label{fig:e3robust}
+\end{figure}
+
+\paragraph{E5 sensitivity: over-optimization scales with the preference bias (Fig.~\ref{fig:rlhfsens}).} The mirror law predicts that what the reward model clones, and what the policy then over-optimizes, scales with the systematic bias present in the preference signal. We sweep the preference-bias strength in the synthetic RLHF-style pipeline of \S\ref{sec:e5}, holding the KL coefficient fixed, and measure at each level both how much the learned reward model has cloned the bias (the partial correlation of its scores with the nuisance direction, controlling for gold) and the resulting over-optimization severity (true quality lost from peak to convergence). Both rise monotonically from essentially zero at zero preference bias --- where the reward model clones nothing (partial correlation $-0.04$) and gold quality does not decline (a loss of $0.01$) --- to substantial at strong bias (partial correlation $0.37$, gold loss $0.21$). The over-optimization is a graded, dose-dependent function of the preference bias rather than an all-or-nothing artifact: bias in, bias out.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{fig9_rlhf_sensitivity.pdf}
+\caption{\textbf{E5 sensitivity: over-optimization scales with the preference bias.} As the systematic bias in the preference signal grows, \emph{(a)} the learned reward model clones more of it (partial correlation of its scores with the nuisance direction, controlling for gold), and \emph{(b)} the resulting over-optimization is more severe (true quality lost from peak to convergence under fixed-$\beta$ PPO). Both vanish at zero preference bias: bias in, bias out.}
+\label{fig:rlhfsens}
+\end{figure}
+
+\subsection{Beyond squared loss: cross-entropy and soft-label distillation}
+\label{app:ce}
+\label{app:ce}
+The squared-loss treatment was chosen for exactness; the qualitative structure carries over to the cross-entropy objective used in soft-label distillation and, through the reward model, in RLHF. Let $p_\theta(x)$ and $q(x)$ be the student's and teacher's softmax distributions and $p^\star(x)$ the true conditional distribution. Soft-label distillation minimizes $\E_x[\mathrm{CE}(q(x),p_\theta(x))]$, whose gradient with respect to the student's logits is the classical softmax--cross-entropy residual
+\[
+\nabla_{z_\theta}\,\mathrm{CE}(q,p_\theta) \;=\; p_\theta(x) - q(x) \;=\; \underbrace{(p_\theta(x)-p^\star(x))}_{e_\theta(x)} \;-\; \underbrace{(q(x)-p^\star(x))}_{\delta(x)} ,
+\]
+the \emph{same} mirror identity, now in probability space and at the level of the gradient: the learning signal is the difference between the student's and the teacher's deviations from the truth. Decomposing $\delta=b+\eta$ into a systematic part and a zero-mean part reproduces the taxonomy --- the student is driven toward $q$, cloning the systematic component $b$ (Regime C) while the zero-mean component averages out under resampling (Regime B). Two differences from the $L^2$ case are worth stating. \emph{(i) The identity is exact for the gradient but not the loss.} Cross-entropy is not quadratic in the error fields, so the crisp asymptotic identity $R^\star_\infty=\norm{b}^2$ becomes approximate; to second order about the optimum the loss is governed by the softmax Fisher metric $\mathrm{diag}(p)-pp^\top$, so the bias is inherited and the noise washes out as before, but the constant relating the true-risk plateau to the bias energy is set by the local curvature rather than being exactly one. \emph{(ii) The undetectability result is loss-agnostic.} Proposition~\ref{prop:undetect} uses only that the learner's objective sees $p_\theta-q$ (agreement with the teacher); a global minimizer with a realizable student has $p_\theta=q$, reproducing the teacher's distribution including its bias, and the trajectory $\{\mathrm{CE}(q,p_{\theta_t})\}$ is again consistent with every $b$. Deceptive descent and trajectory-undetectability therefore transfer verbatim. For KL-regularized RLHF, $\E[r_\phi]-\beta\,\mathrm{KL}(\pi\Vert\pi_{\mathrm{ref}})$, the reward model $r_\phi$ plays the reference role and its systematic bias $b_\phi$ (length, sycophancy) is the bias field; the KL term is a leash toward $\pi_{\mathrm{ref}}$ that bounds how far the policy can exploit $b_\phi$ (mitigation, as in E3/E5) but does not correct it --- consistent with the squared-loss analysis.
+
+\end{document}
