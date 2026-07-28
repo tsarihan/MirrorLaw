@@ -89,4 +89,3 @@ The paper text and figures (`paper/`, `figures/`) are licensed **CC-BY-4.0**, ma
 
 ## Archiving
 This repository is archived on Zenodo with a permanent DOI: **[10.5281/zenodo.21282027](https://doi.org/10.5281/zenodo.21282027)**.
-To auto-archive future releases, enable the repository in the [GitHub–Zenodo integration](https://help.zenodo.org/docs/profile/linking-accounts/) and publish a GitHub Release; Zenodo mints a new version DOI automatically under the same concept DOI.
