@@ -76,6 +76,9 @@ python audit/context_probe.py && python audit/score_context.py   # true effectiv
 ```
 
 ## Citation
+
+If you use this work, please cite the paper:
+
 ```bibtex
 @article{sarihan2026mirror,
   title   = {The Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation},
@@ -84,7 +87,17 @@ python audit/context_probe.py && python audit/score_context.py   # true effectiv
   doi     = {10.5281/zenodo.21282027},
   note    = {Preprint}
 }
-```
+
+If you use the code or audit tools, please also cite the software:
+
+@software{sarihan2026mirrorcode,
+  title     = {Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation (code + paper)},
+  author    = {Sarihan, Tom},
+  year      = {2026},
+  doi       = {10.5281/zenodo.21750441},
+  version   = {v1.0.1},
+  publisher = {Zenodo}
+}
 
 ## License
 Code (`experiments/`, `audit/`) is released under the **Apache License 2.0** (see `LICENSE` and `NOTICE`). Apache-2.0 includes an explicit patent grant and defensive-termination clause.
