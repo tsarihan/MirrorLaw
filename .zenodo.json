@@ -1,0 +1,37 @@
+{
+  "title": "Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation (code + paper)",
+  "upload_type": "software",
+  "version": "v1.0.0",
+  "language": "eng",
+  "description": "Reproduction code and manuscript for the preprint 'The Mirror Law' (DOI: 10.5281/zenodo.21282027). Includes seeded CPU experiments E1-E6, the real-LLM E7 DPO study, the Mirror Audit tools (deceptive-descent detector, gold-centered rho estimator, effective-context probe), and the headline figure. Code under Apache-2.0; paper and figures under CC-BY-4.0.",
+  "creators": [
+    {
+      "name": "Sarihan, Tom",
+      "orcid": "0009-0003-8391-2303",
+      "affiliation": "Harrisburg University of Science and Technology"
+    }
+  ],
+  "access_right": "open",
+  "license": "Apache-2.0",
+  "keywords": [
+    "knowledge distillation",
+    "RLHF",
+    "RLAIF",
+    "reward model over-optimization",
+    "reward hacking",
+    "bias transfer",
+    "imitation learning",
+    "model collapse",
+    "learning from noisy labels",
+    "AI safety",
+    "calibration",
+    "preference learning"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.5281/zenodo.21282027",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-preprint"
+    }
+  ]
+}
