@@ -98,6 +98,7 @@ If you use the code or audit tools, please also cite the software:
   version   = {v1.0.1},
   publisher = {Zenodo}
 }
+```
 
 ## License
 Code (`experiments/`, `audit/`) is released under the **Apache License 2.0** (see `LICENSE` and `NOTICE`). Apache-2.0 includes an explicit patent grant and defensive-termination clause.
