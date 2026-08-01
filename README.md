@@ -7,7 +7,7 @@ Tom Sarihan · Harrisburg University of Science and Technology · Desnet AI LLC
 
 [![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21282027.svg)](https://doi.org/10.5281/zenodo.21282027)
 
-[![Code DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21750441.svg)](https://doi.org/10.5281/zenodo.21750441)
+[![Code DOI](https://zenodo.org/badge/1295511236.svg)](https://doi.org/10.5281/zenodo.21750441)
 
 &nbsp;License: code Apache-2.0 · paper CC-BY-4.0
 
