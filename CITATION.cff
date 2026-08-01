@@ -1,16 +1,26 @@
 cff-version: 1.2.0
-message: "If you use this work, please cite it as below."
-title: "The Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation"
+message: "If you use this work, please cite both the paper and the software."
+title: "Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation (code + paper)"
 authors:
   - family-names: "Sarihan"
     given-names: "Tom"
     orcid: "https://orcid.org/0009-0003-8391-2303"
     affiliation: "Harrisburg University of Science and Technology; Desnet AI LLC"
-type: article
-doi: "10.5281/zenodo.21282027"
-date-released: 2026-07-09
-license: CC-BY-4.0
+type: software
+doi: "10.5281/zenodo.21750441"
+version: "v1.0.1"
+date-released: 2026-08-02
+license: Apache-2.0
 url: "https://github.com/tsarihan/MirrorLaw"
+preferred-citation:
+  type: article
+  title: "The Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation"
+  authors:
+    - family-names: "Sarihan"
+      given-names: "Tom"
+      orcid: "https://orcid.org/0009-0003-8391-2303"
+  doi: "10.5281/zenodo.21282027"
+  year: 2026
 keywords:
   - knowledge distillation
   - RLHF
