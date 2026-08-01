@@ -79,6 +79,10 @@ python audit/context_probe.py && python audit/score_context.py   # true effectiv
 
 If you use this work, please cite the paper:
 
+## Citation
+
+If you use this work, please cite the paper:
+
 ```bibtex
 @article{sarihan2026mirror,
   title   = {The Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation},
@@ -87,9 +91,11 @@ If you use this work, please cite the paper:
   doi     = {10.5281/zenodo.21282027},
   note    = {Preprint}
 }
+```
 
 If you use the code or audit tools, please also cite the software:
 
+```bibtex
 @software{sarihan2026mirrorcode,
   title     = {Mirror Law: Reference Quality and the Transfer of Systematic Bias in Imitation and Distillation (code + paper)},
   author    = {Sarihan, Tom},
