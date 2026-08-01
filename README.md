@@ -111,4 +111,4 @@ Code (`experiments/`, `audit/`) is released under the **Apache License 2.0** (se
 The paper text and figures (`paper/`, `figures/`) are licensed **CC-BY-4.0**, matching the Zenodo record.
 
 ## Archiving
-This repository is archived on Zenodo with a permanent DOI: **[10.5281/zenodo.21282027](https://doi.org/10.5281/zenodo.21282027)**.
+This repository is archived on Zenodo with a permanent DOI: **[10.5281/zenodo.21750441](https://doi.org/10.5281/zenodo.21750441)** (concept DOI — always resolves to the latest release). The accompanying paper has its own DOI: **[10.5281/zenodo.21282027](https://doi.org/10.5281/zenodo.21282027)**.
