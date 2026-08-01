@@ -4,8 +4,8 @@
 
 Tom Sarihan · Harrisburg University of Science and Technology · Desnet AI LLC
 [ORCID 0009-0003-8391-2303](https://orcid.org/0009-0003-8391-2303)
-
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21282027-blue)](https://doi.org/10.5281/zenodo.21282027)
+[![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21282027.svg)](https://doi.org/10.5281/zenodo.21282027)
+[![Code DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21750441.svg)](https://doi.org/10.5281/zenodo.21750441)
 &nbsp;License: code Apache-2.0 · paper CC-BY-4.0
 
 ---
